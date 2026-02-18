@@ -1,12 +1,3 @@
-/**
- * This file is part of the NocoBase (R) project.
- * Copyright (c) 2020-2024 NocoBase Co., Ltd.
- * Authors: NocoBase Team.
- *
- * This project is dual-licensed under AGPL-3.0 and NocoBase Commercial License.
- * For more information, please refer to: https://www.nocobase.com/agreement.
- */
-
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { connect, mapReadPretty } from '@formily/react';
 import { Alert, Badge, Button, Image, Modal, Space, Spin, Tag, Tooltip, Typography, theme } from 'antd';
@@ -212,7 +203,7 @@ const Inner: React.FC<Props> = (props) => {
         if (ok) startBarcodeScanning();
       }
     } catch (err: any) {
-      setError(err.name === 'NotAllowedError' ? 'Camera access denied.' : `Camera error: ${err.message}`);
+      setError(err.name === 'NotAllowedError' ? 'Camera access denied.' : 'Camera error: ' + err.message);
     }
   }, [facing, requireBarcode, startBarcodeScanning]);
 
@@ -260,7 +251,7 @@ const Inner: React.FC<Props> = (props) => {
         captureIndex: idx,
         imageHash: hash,
       };
-      setPreview({ blob, previewUrl: URL.createObjectURL(blob), filename: `capture_${Date.now()}_${idx}.jpg`, meta });
+      setPreview({ blob, previewUrl: URL.createObjectURL(blob), filename: 'capture_' + Date.now() + '_' + idx + '.jpg', meta });
     } finally {
       setLoading(false);
     }
@@ -324,7 +315,7 @@ const Inner: React.FC<Props> = (props) => {
       if (updated.length >= maxCaptures) stopCamera();
       else if (requireBarcode && jsQRModule && cameraOn) startBarcodeScanning();
     } catch (err: any) {
-      setError(`Upload failed: ${err.message}`);
+      setError('Upload failed: ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -376,7 +367,7 @@ const Inner: React.FC<Props> = (props) => {
   return (
     <div
       style={{
-        border: `1px solid ${token.colorBorder}`,
+        border: '1px solid ' + token.colorBorder,
         borderRadius: token.borderRadius,
         padding: token.paddingSM,
         background: token.colorBgContainer,
@@ -428,10 +419,10 @@ const Inner: React.FC<Props> = (props) => {
                     title={
                       <div style={{ fontSize: 11 }}>
                         <div>
-                          <ClockCircleOutlined /> {c.meta?.timestamp || c.createdAt || '—'}
+                          <ClockCircleOutlined /> {c.meta?.timestamp || (c as any).createdAt || '\u2014'}
                         </div>
                         <div>
-                          <UserOutlined /> {c.meta?.userName || c.title || '—'}
+                          <UserOutlined /> {c.meta?.userName || c.title || '\u2014'}
                         </div>
                         {c.meta?.latitude != null && (
                           <div>
@@ -443,7 +434,7 @@ const Inner: React.FC<Props> = (props) => {
                             <ScanOutlined /> {c.meta.barcode}
                           </div>
                         )}
-                        {c.meta?.imageHash && <div>SHA-256: {c.meta.imageHash.substring(0, 16)}…</div>}
+                        {c.meta?.imageHash && <div>SHA-256: {c.meta.imageHash.substring(0, 16)}\u2026</div>}
                       </div>
                     }
                   >
@@ -451,7 +442,7 @@ const Inner: React.FC<Props> = (props) => {
                       src={getImageUrl(c)}
                       width={80}
                       height={80}
-                      style={{ objectFit: 'cover', borderRadius: 4, border: `2px solid ${token.colorPrimary}` }}
+                      style={{ objectFit: 'cover', borderRadius: 4, border: '2px solid ' + token.colorPrimary }}
                     />
                   </Tooltip>
                 </Badge>
@@ -506,7 +497,7 @@ const Inner: React.FC<Props> = (props) => {
                   fontSize: 12,
                 }}
               >
-                <ScanOutlined spin /> Scanning for barcode…
+                <ScanOutlined spin /> Scanning for barcode\u2026
               </div>
             )}
             {barcode && (
@@ -568,7 +559,7 @@ const Inner: React.FC<Props> = (props) => {
                   maxWidth: '100%',
                   maxHeight: 400,
                   borderRadius: token.borderRadius,
-                  border: `2px solid ${token.colorSuccess}`,
+                  border: '2px solid ' + token.colorSuccess,
                 }}
                 preview={false}
               />
@@ -601,13 +592,13 @@ const Inner: React.FC<Props> = (props) => {
                   )}
                   {preview.meta?.imageHash && (
                     <Text copyable={{ text: preview.meta.imageHash }}>
-                      SHA-256: {preview.meta.imageHash.substring(0, 20)}…
+                      SHA-256: {preview.meta.imageHash.substring(0, 20)}\u2026
                     </Text>
                   )}
                 </Space>
               </div>
               {requireBarcode && !preview.meta?.barcode && (
-                <Alert message="No barcode detected — required." type="warning" showIcon style={{ marginTop: 8 }} />
+                <Alert message="No barcode detected \u2014 required." type="warning" showIcon style={{ marginTop: 8 }} />
               )}
               <Space style={{ marginTop: 12 }}>
                 <Button icon={<ReloadOutlined />} onClick={handleRetake}>
@@ -629,7 +620,7 @@ const Inner: React.FC<Props> = (props) => {
       )}
 
       {captures.length >= maxCaptures && !disabled && (
-        <Alert message={`Maximum captures reached (${maxCaptures})`} type="success" showIcon style={{ marginTop: 8 }} />
+        <Alert message={'Maximum captures reached (' + maxCaptures + ')'} type="success" showIcon style={{ marginTop: 8 }} />
       )}
       {captures.length === 0 && !cameraOn && !preview && (
         <Paragraph type="secondary" style={{ textAlign: 'center', marginTop: 16 }}>
@@ -643,3 +634,7 @@ const Inner: React.FC<Props> = (props) => {
 };
 
 export const ImageCaptureField = connect(Inner, mapReadPretty(ImageCaptureReadPretty));
+
+// Register ReadPretty as static property so table/kanban views can find it
+// via x-component: 'ImageCaptureField.ReadPretty'
+(ImageCaptureField as any).ReadPretty = ImageCaptureReadPretty;

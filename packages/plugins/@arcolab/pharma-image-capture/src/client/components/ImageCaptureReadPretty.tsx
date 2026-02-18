@@ -1,12 +1,3 @@
-/**
- * This file is part of the NocoBase (R) project.
- * Copyright (c) 2020-2024 NocoBase Co., Ltd.
- * Authors: NocoBase Team.
- *
- * This project is dual-licensed under AGPL-3.0 and NocoBase Commercial License.
- * For more information, please refer to: https://www.nocobase.com/agreement.
- */
-
 import React from 'react';
 import { Image, Space, Tag, Tooltip, Typography, Empty, theme } from 'antd';
 import {
@@ -38,7 +29,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
   const captures = value || [];
 
   if (captures.length === 0) {
-    if (size === 'small') return <Text type="secondary">—</Text>;
+    if (size === 'small') return <Text type="secondary">\u2014</Text>;
     return <Empty description="No captures" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
   }
 
@@ -63,7 +54,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
   return (
     <div
       style={{
-        border: `1px solid ${token.colorBorderSecondary}`,
+        border: '1px solid ' + token.colorBorderSecondary,
         borderRadius: token.borderRadius,
         padding: token.paddingSM,
         background: token.colorBgContainer,
@@ -71,7 +62,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
     >
       <div style={{ marginBottom: 8 }}>
         <Tag icon={<SafetyCertificateOutlined />} color="blue">
-          Image — {captures.length} capture(s)
+          Image \u2014 {captures.length} capture(s)
         </Tag>
       </div>
       <Image.PreviewGroup>
@@ -80,7 +71,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
             <div
               key={i}
               style={{
-                border: `1px solid ${token.colorBorder}`,
+                border: '1px solid ' + token.colorBorder,
                 borderRadius: token.borderRadius,
                 overflow: 'hidden',
                 width: 200,
@@ -94,11 +85,11 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
                     ? new Date(c.meta.timestamp).toLocaleString()
                     : c.createdAt
                       ? new Date(c.createdAt).toLocaleString()
-                      : '—'}
+                      : '\u2014'}
                 </div>
                 <div>
                   <UserOutlined style={{ marginRight: 4 }} />
-                  {c.meta?.userName || c.title || c.filename || '—'}
+                  {c.meta?.userName || c.title || c.filename || '\u2014'}
                 </div>
                 {c.meta?.latitude != null && (
                   <div>
@@ -112,7 +103,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
                     {c.meta.barcode}
                   </div>
                 )}
-                {c.meta?.imageHash && <div>SHA-256: {c.meta.imageHash.substring(0, 12)}…</div>}
+                {c.meta?.imageHash && <div>SHA-256: {c.meta.imageHash.substring(0, 12)}\u2026</div>}
               </div>
             </div>
           ))}

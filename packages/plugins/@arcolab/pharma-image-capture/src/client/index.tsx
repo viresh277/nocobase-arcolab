@@ -1,35 +1,31 @@
-/**
- * This file is part of the NocoBase (R) project.
- * Copyright (c) 2020-2024 NocoBase Co., Ltd.
- * Authors: NocoBase Team.
- *
- * This project is dual-licensed under AGPL-3.0 and NocoBase Commercial License.
- * For more information, please refer to: https://www.nocobase.com/agreement.
- */
-
 import { Plugin } from '@nocobase/client';
 import { ImageCaptureFieldInterface } from './interfaces/ImageCaptureFieldInterface';
 import { ImageCaptureField } from './components/ImageCaptureField';
 import { ImageCaptureReadPretty } from './components/ImageCaptureReadPretty';
 import { ImageCaptureSettings } from './components/ImageCaptureSettings';
 import { useImageCaptureFieldProps } from './hooks/useImageCaptureFieldProps';
-import { NAMESPACE } from './locale';
+import { NAMESPACE, tval } from './locale';
 
-export class ImageCapturePlugin extends Plugin {
+export class PharmaImageCapturePlugin extends Plugin {
   async load() {
     this.app.dataSourceManager.addFieldInterfaces([ImageCaptureFieldInterface]);
+
     this.app.addComponents({
       ImageCaptureField,
-      'ImageCaptureField.ReadPretty': ImageCaptureReadPretty,
+      ImageCaptureReadPretty,
       ImageCaptureSettings,
     });
-    this.app.addScopes({ useImageCaptureFieldProps });
+
+    this.app.addScopes({
+      useImageCaptureFieldProps,
+    });
+
     this.app.pluginSettingsManager.add(NAMESPACE, {
-      title: `{{t("Image Capture", { ns: "${NAMESPACE}" })}}`,
+      title: tval('Pharma Image Capture Settings'),
       icon: 'CameraOutlined',
       Component: ImageCaptureSettings,
     });
   }
 }
 
-export default ImageCapturePlugin;
+export default PharmaImageCapturePlugin;
