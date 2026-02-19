@@ -58,11 +58,14 @@ export class ImageCapturePlugin extends Plugin {
     this.app.acl.allow('imageCaptureAudit', ['list', 'get'], 'loggedIn');
     this.app.acl.registerSnippet({ name: 'pm.' + this.name, actions: ['imageCaptureAudit:*'] });
 
+    // Auto-audit: fires on any attachment upload — covers both images (capture_*) and videos (video_*)
     this.db.on('attachments.afterCreate', async (model, options) => {
       try {
         var mimetype = model.get('mimetype') || '';
         var filename = model.get('filename') || '';
-        if (!mimetype.startsWith('image/') || !filename.match(/^capture_/)) return;
+        var isImageCapture = mimetype.startsWith('image/') && !!filename.match(/^capture_/);
+        var isVideoCapture = (mimetype.startsWith('video/') || mimetype === 'application/octet-stream') && !!filename.match(/^video_/);
+        if (!isImageCapture && !isVideoCapture) return;
         var repo = this.db.getRepository('imageCaptureAudit');
         if (!repo) return;
         await repo.create({
@@ -72,7 +75,7 @@ export class ImageCapturePlugin extends Plugin {
             serverTimestamp: new Date().toISOString(),
             capturedById: (options && options.context && options.context.state && options.context.state.currentUser) ? options.context.state.currentUser.id : null,
             capturedByName: 'System (auto-audit)',
-            action: 'CAPTURE_AUTO',
+            action: isVideoCapture ? 'VIDEO_CAPTURE_AUTO' : 'IMAGE_CAPTURE_AUTO',
             metadata: { mimetype: mimetype, filename: filename, size: model.get('size'), autoCreated: true },
           },
         });
@@ -86,12 +89,12 @@ export class ImageCapturePlugin extends Plugin {
       var changed = model.changed() || [];
       var violated = changed.filter(function(f) { return immutable.indexOf(f) >= 0; });
       if (violated.length > 0) {
-        throw new Error('FDA 21 CFR Part 11 Compliance Violation: Cannot modify immutable audit fields [' + violated.join(', ') + '].');
+        throw new Error('Compliance Violation: Cannot modify immutable audit fields [' + violated.join(', ') + '].');
       }
     });
 
     this.db.on('imageCaptureAudit.beforeDestroy', async () => {
-      throw new Error('FDA 21 CFR Part 11 Compliance Violation: Audit records cannot be deleted.');
+      throw new Error('Compliance Violation: Audit records cannot be deleted.');
     });
 
     this.log.info('[image-capture] Plugin loaded.');

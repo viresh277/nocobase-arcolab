@@ -1,24 +1,15 @@
-/**
- * This file is part of the NocoBase (R) project.
- * Copyright (c) 2020-2024 NocoBase Co., Ltd.
- * Authors: NocoBase Team.
- *
- * This project is dual-licensed under AGPL-3.0 and NocoBase Commercial License.
- * For more information, please refer to: https://www.nocobase.com/agreement.
- */
-
 import { ISchema } from '@formily/react';
 import { uid } from '@formily/shared';
 import { CollectionFieldInterface, interfacesProperties } from '@nocobase/client';
-import { NAMESPACE, tval } from '../locale';
+import { tval } from '../locale';
 
 export class ImageCaptureFieldInterface extends CollectionFieldInterface {
   name = 'imageCapture';
   type = 'object';
   group = 'media';
   order = 2;
-  title = tval('Image Capture');
-  description = tval('Image Capture Field');
+  title = tval('Image / Video Capture');
+  description = tval('Capture image or video with automatic timestamp');
   isAssociation = true;
 
   default = {
@@ -29,8 +20,7 @@ export class ImageCaptureFieldInterface extends CollectionFieldInterface {
       'x-component': 'ImageCaptureField',
       'x-use-component-props': 'useImageCaptureFieldProps',
       'x-component-props': {
-        cameraOnly: true,
-        requireBarcode: false,
+        mode: 'image',
         maxCaptures: 5,
         enableGeolocation: true,
       },
@@ -43,7 +33,10 @@ export class ImageCaptureFieldInterface extends CollectionFieldInterface {
     if (!schema['x-component-props']) {
       schema['x-component-props'] = {};
     }
-    schema['x-component-props'].cameraOnly = field?.uiSchema?.['x-component-props']?.cameraOnly ?? true;
+    const fp = field?.uiSchema?.['x-component-props'] || {};
+    schema['x-component-props'].mode = fp.mode ?? 'image';
+    schema['x-component-props'].maxCaptures = fp.maxCaptures ?? 5;
+    schema['x-component-props'].enableGeolocation = fp.enableGeolocation ?? true;
     if (['Table', 'Kanban'].includes(block)) {
       schema['x-component-props'].size = 'small';
       schema['x-component'] = 'ImageCaptureField.ReadPretty';
@@ -52,28 +45,26 @@ export class ImageCaptureFieldInterface extends CollectionFieldInterface {
   }
 
   initialize(values: any) {
-    if (!values.through) values.through = `t_${uid()}`;
-    if (!values.foreignKey) values.foreignKey = `f_${uid()}`;
-    if (!values.otherKey) values.otherKey = `f_${uid()}`;
+    if (!values.through) values.through = 't_' + uid();
+    if (!values.foreignKey) values.foreignKey = 'f_' + uid();
+    if (!values.otherKey) values.otherKey = 'f_' + uid();
     if (!values.sourceKey) values.sourceKey = 'id';
     if (!values.targetKey) values.targetKey = 'id';
   }
 
   properties = {
     ...interfacesProperties.defaultProps,
-    'uiSchema.x-component-props.cameraOnly': {
-      type: 'boolean',
-      title: tval('Camera Only'),
+    'uiSchema.x-component-props.mode': {
+      type: 'string',
+      title: tval('Capture Mode'),
       'x-decorator': 'FormItem',
-      'x-component': 'Checkbox',
-      default: true,
-    },
-    'uiSchema.x-component-props.requireBarcode': {
-      type: 'boolean',
-      title: tval('Require Barcode'),
-      'x-decorator': 'FormItem',
-      'x-component': 'Checkbox',
-      default: false,
+      'x-component': 'Radio.Group',
+      default: 'image',
+      'x-component-props': { optionType: 'button', buttonStyle: 'solid' },
+      enum: [
+        { label: '\ud83d\udcf8  Image', value: 'image' },
+        { label: '\ud83c\udfa5  Video', value: 'video' },
+      ],
     },
     'uiSchema.x-component-props.maxCaptures': {
       type: 'number',
@@ -85,7 +76,7 @@ export class ImageCaptureFieldInterface extends CollectionFieldInterface {
     },
     'uiSchema.x-component-props.enableGeolocation': {
       type: 'boolean',
-      title: tval('Enable Geolocation'),
+      title: tval('Enable GPS Location'),
       'x-decorator': 'FormItem',
       'x-component': 'Checkbox',
       default: true,
