@@ -20,12 +20,13 @@ interface CaptureRecord {
   extname?: string;
   createdAt?: string;
   meta?: {
+    mode?: string;
     timestamp?: string;
     userName?: string;
     latitude?: number;
     longitude?: number;
     durationMs?: number;
-  };
+  } | Record<string, unknown>;
 }
 
 function getRawUrl(rec: CaptureRecord): string {
@@ -42,34 +43,30 @@ function resolveUrl(raw: string): string {
   return `${window.location.origin}/${raw.replace(/^\//, '')}`;
 }
 
+const VIDEO_EXT_RE = /\.(webm|mp4|mov|avi|mkv|ogg)(\?|$)/i;
+
 /**
- * Detect MIME type from the record. Checks direct mimetype fields first,
- * then falls back to extension-based detection from extname / filename / url.
+ * Ultra-robust video detection. Checks every possible signal.
  */
-function mimeOf(rec: CaptureRecord | null | undefined): string {
-  const direct = rec?.mimeType ?? rec?.mimetype ?? '';
-  if (direct) return direct;
-  const hint = (rec?.extname ?? rec?.filename ?? rec?.url ?? '').toLowerCase();
-  if (/\.webm/i.test(hint)) return 'video/webm';
-  if (/\.mp4/i.test(hint)) return 'video/mp4';
-  if (/\.mov/i.test(hint)) return 'video/quicktime';
-  if (/\.avi/i.test(hint)) return 'video/x-msvideo';
-  if (/\.mkv/i.test(hint)) return 'video/x-matroska';
-  if (/\.ogg/i.test(hint)) return 'video/ogg';
-  if (/\.jpe?g/i.test(hint)) return 'image/jpeg';
-  if (/\.png/i.test(hint)) return 'image/png';
-  if (/\.gif/i.test(hint)) return 'image/gif';
-  if (/\.webp/i.test(hint)) return 'image/webp';
-  return '';
+function isVideo(rec: CaptureRecord | null | undefined): boolean {
+  if (!rec) return false;
+  // 1. Our custom meta field
+  if ((rec.meta as any)?.mode === 'video') return true;
+  // 2. Direct MIME type fields
+  const mt = (rec.mimeType || rec.mimetype || '').toLowerCase();
+  if (mt.startsWith('video/')) return true;
+  // 3. Extension in extname / filename / url
+  const hint = `${rec.extname || ''} ${rec.filename || ''} ${rec.url || ''}`.toLowerCase();
+  if (VIDEO_EXT_RE.test(hint)) return true;
+  // 4. Our filename convention
+  if (rec.filename && rec.filename.startsWith('video_')) return true;
+  return false;
 }
 
 /** Strip codec params so the type attr is clean: "video/webm;codecs=vp9" → "video/webm" */
-function baseMime(mime: string): string {
-  return mime.split(';')[0].trim() || '';
-}
-
-function isVideo(rec: CaptureRecord | null | undefined): boolean {
-  return mimeOf(rec).startsWith('video/');
+function baseMime(rec: CaptureRecord | null | undefined): string {
+  const mt = (rec?.mimeType || rec?.mimetype || '');
+  return mt.split(';')[0].trim();
 }
 
 // Exported so ImageCaptureField's declaration build can name this type (TS4023)
@@ -95,21 +92,18 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
       : <Empty description="No captures" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
   }
 
-  const modalUrl = modal ? getUrl(modal) : '';
-  const modalMime = modal ? baseMime(mimeOf(modal)) : '';
-  const modalTs = modal?.meta?.timestamp ?? '';
-  const modalDur = modal?.meta?.durationMs != null
-    ? `${(modal.meta.durationMs / 1000).toFixed(1)}s` : null;
-
   const openVideoModal = (c: CaptureRecord) => {
     setVideoError(false);
     setModal(c);
   };
+  const closeModal = () => { setModal(null); setVideoError(false); };
 
-  const closeModal = () => {
-    setModal(null);
-    setVideoError(false);
-  };
+  const modalUrl = modal ? getUrl(modal) : '';
+  const modalMime = baseMime(modal);
+  const modalMeta = modal?.meta as any;
+  const modalTs = modalMeta?.timestamp ?? '';
+  const modalDur = modalMeta?.durationMs != null
+    ? `${(modalMeta.durationMs / 1000).toFixed(1)}s` : null;
 
   const videoModal = (
     <Modal
@@ -120,7 +114,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
       title={
         <Space>
           <VideoCameraOutlined style={{ color: token.colorPrimary }} />
-          <Text strong>Video Capture</Text>
+          <Text strong>Video Playback</Text>
           {modalTs && <Text type="secondary" style={{ fontSize: 12 }}><ClockCircleOutlined style={{ marginRight: 4 }} />{modalTs}</Text>}
           {modalDur && <Tag color="purple">{modalDur}</Tag>}
         </Space>
@@ -132,9 +126,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
         <>
           <video
             key={modalUrl}
-            controls
-            autoPlay
-            playsInline
+            controls autoPlay playsInline
             onError={() => setVideoError(true)}
             style={{ width: '100%', maxHeight: 500, display: 'block', borderRadius: token.borderRadius, background: '#000' }}
           >
@@ -143,9 +135,9 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
             Your browser does not support video playback.
           </video>
           <div style={{ marginTop: 10, fontSize: 12, color: token.colorTextSecondary }}>
-            {modal.meta?.userName && <div><UserOutlined style={{ marginRight: 4 }} />{modal.meta.userName}</div>}
-            {modal.meta?.latitude != null && (
-              <div><EnvironmentOutlined style={{ marginRight: 4 }} />{modal.meta.latitude.toFixed(4)}, {modal.meta.longitude?.toFixed(4)}</div>
+            {modalMeta?.userName && <div><UserOutlined style={{ marginRight: 4 }} />{modalMeta.userName}</div>}
+            {modalMeta?.latitude != null && (
+              <div><EnvironmentOutlined style={{ marginRight: 4 }} />{modalMeta.latitude.toFixed(4)}, {modalMeta.longitude?.toFixed(4)}</div>
             )}
           </div>
         </>
@@ -164,6 +156,36 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
     </Modal>
   );
 
+  /** Icon-based video thumbnail — always visible, clickable */
+  const videoThumb = (c: CaptureRecord, w: number, h: number) => (
+    <div
+      onClick={() => openVideoModal(c)}
+      style={{
+        position: 'relative', width: w, height: h,
+        background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+        borderRadius: 4, border: `1px solid ${token.colorBorder}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer', overflow: 'hidden',
+      }}
+    >
+      <VideoCameraOutlined style={{ fontSize: Math.max(10, w * 0.35), color: 'rgba(255,255,255,0.3)' }} />
+      <PlayCircleOutlined style={{
+        position: 'absolute', top: '50%', left: '50%',
+        transform: 'translate(-50%,-50%)',
+        fontSize: Math.max(10, w * 0.28), color: 'rgba(255,255,255,0.9)',
+      }} />
+      {(c.meta as any)?.durationMs != null && w >= 80 && (
+        <div style={{
+          position: 'absolute', bottom: 2, right: 4,
+          fontSize: 9, color: '#fff', background: 'rgba(0,0,0,0.6)',
+          padding: '0 3px', borderRadius: 2,
+        }}>
+          {((c.meta as any).durationMs / 1000).toFixed(1)}s
+        </div>
+      )}
+    </div>
+  );
+
   if (size === 'small') {
     return (
       <>
@@ -171,14 +193,8 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
           {captures.map((c, i) => {
             const url = getUrl(c);
             return isVideo(c) ? (
-              <Tooltip key={i} title={c.meta?.timestamp ?? c.filename ?? 'Video'}>
-                <div onClick={() => openVideoModal(c)} style={{
-                  width: 24, height: 24, background: '#1a1a2e', borderRadius: 2,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-                  border: `1px solid ${token.colorBorder}`,
-                }}>
-                  <VideoCameraOutlined style={{ fontSize: 11, color: token.colorPrimary }} />
-                </div>
+              <Tooltip key={i} title={(c.meta as any)?.timestamp ?? c.filename ?? 'Video'}>
+                {videoThumb(c, 24, 24)}
               </Tooltip>
             ) : (
               <Image key={i} src={url} width={24} height={24}
@@ -211,7 +227,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
                   overflow: 'hidden', width: 200, background: token.colorBgLayout,
                 }}>
                   {vid ? (
-                    /* Icon-based video thumbnail — always visible */
+                    /* Icon-based video card — always visible, click to play */
                     <div
                       style={{
                         position: 'relative', width: 200, height: 150, cursor: 'pointer',
@@ -220,20 +236,20 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
                       }}
                       onClick={() => openVideoModal(c)}
                     >
-                      <VideoCameraOutlined style={{ fontSize: 48, color: 'rgba(255,255,255,0.25)' }} />
+                      <VideoCameraOutlined style={{ fontSize: 48, color: 'rgba(255,255,255,0.2)' }} />
                       <div style={{
                         position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
                         justifyContent: 'center',
                       }}>
                         <PlayCircleOutlined style={{ fontSize: 42, color: 'rgba(255,255,255,0.9)' }} />
                       </div>
-                      {c.meta?.durationMs != null && (
+                      {(c.meta as any)?.durationMs != null && (
                         <div style={{
                           position: 'absolute', bottom: 6, right: 8,
                           fontSize: 11, color: '#fff', background: 'rgba(0,0,0,0.65)',
                           padding: '1px 6px', borderRadius: 3,
                         }}>
-                          {(c.meta.durationMs / 1000).toFixed(1)}s
+                          {((c.meta as any).durationMs / 1000).toFixed(1)}s
                         </div>
                       )}
                     </div>
@@ -244,16 +260,16 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
                   <div style={{ padding: '6px 8px', fontSize: 11, lineHeight: 1.6 }}>
                     <div>
                       <ClockCircleOutlined style={{ marginRight: 4, color: token.colorWarning }} />
-                      {c.meta?.timestamp ?? (c.createdAt
+                      {(c.meta as any)?.timestamp ?? (c.createdAt
                         ? new Date(c.createdAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                         : EM_DASH)}
                     </div>
-                    <div><UserOutlined style={{ marginRight: 4 }} />{c.meta?.userName ?? c.title ?? c.filename ?? EM_DASH}</div>
-                    {c.meta?.latitude != null && (
-                      <div><EnvironmentOutlined style={{ marginRight: 4 }} />{c.meta.latitude.toFixed(4)}, {c.meta.longitude?.toFixed(4)}</div>
+                    <div><UserOutlined style={{ marginRight: 4 }} />{(c.meta as any)?.userName ?? c.title ?? c.filename ?? EM_DASH}</div>
+                    {(c.meta as any)?.latitude != null && (
+                      <div><EnvironmentOutlined style={{ marginRight: 4 }} />{(c.meta as any).latitude.toFixed(4)}, {(c.meta as any).longitude?.toFixed(4)}</div>
                     )}
-                    {vid && c.meta?.durationMs != null && (
-                      <div><PlayCircleOutlined style={{ marginRight: 4 }} />{(c.meta.durationMs / 1000).toFixed(1)}s</div>
+                    {vid && (c.meta as any)?.durationMs != null && (
+                      <div><PlayCircleOutlined style={{ marginRight: 4 }} />{((c.meta as any).durationMs / 1000).toFixed(1)}s</div>
                     )}
                   </div>
                 </div>
