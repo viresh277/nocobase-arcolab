@@ -14,7 +14,7 @@ import { ImageCaptureReadPretty } from './ImageCaptureReadPretty';
 
 const { Text, Paragraph } = Typography;
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// Types
 
 export type CaptureMode = 'image' | 'video';
 
@@ -37,6 +37,7 @@ export interface CaptureRecord {
   url?: string;
   filename?: string;
   title?: string;
+  extname?: string;
   blob?: Blob;
   previewUrl?: string;
   preview?: string;
@@ -62,14 +63,33 @@ interface UserInfo {
   username?: string;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// Helpers
 
 function getRawUrl(rec: CaptureRecord): string {
   return rec.url ?? rec.previewUrl ?? rec.preview ?? '';
 }
 
+/**
+ * Detect MIME type from the record. Checks direct mimetype fields first,
+ * then falls back to extension-based detection from extname / filename / url.
+ */
 function mimeOf(rec: CaptureRecord | null | undefined): string {
-  return rec?.mimeType ?? rec?.mimetype ?? '';
+  const direct = rec?.mimeType ?? rec?.mimetype ?? '';
+  if (direct) return direct;
+  const hint = (rec?.extname ?? rec?.filename ?? rec?.url ?? '').toLowerCase();
+  if (/\.webm/.test(hint)) return 'video/webm';
+  if (/\.mp4/.test(hint)) return 'video/mp4';
+  if (/\.mov/.test(hint)) return 'video/quicktime';
+  if (/\.avi/.test(hint)) return 'video/x-msvideo';
+  if (/\.jpe?g/.test(hint)) return 'image/jpeg';
+  if (/\.png/.test(hint)) return 'image/png';
+  if (/\.gif/.test(hint)) return 'image/gif';
+  if (/\.webp/.test(hint)) return 'image/webp';
+  return '';
+}
+
+function isVideoRec(rec: CaptureRecord | null | undefined): boolean {
+  return mimeOf(rec).startsWith('video/');
 }
 
 function getISTTimestamp(): string {
@@ -135,7 +155,10 @@ function buildMeta(
   };
 }
 
-// ─── Props ───────────────────────────────────────────────────────────────────
+// em dash constant
+const EM_DASH = String.fromCharCode(8212);
+
+// Props
 
 interface Props {
   value?: CaptureRecord[];
@@ -149,7 +172,7 @@ interface Props {
   size?: 'small' | 'default';
 }
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// Component
 
 const Inner: React.FC<Props> = ({
   value, onChange, disabled = false, mode = 'image',
@@ -163,7 +186,7 @@ const Inner: React.FC<Props> = ({
     (rec: CaptureRecord) => resolveUrl(getRawUrl(rec), api), [api],
   );
 
-  // Refs — stable across renders, used in async callbacks to avoid stale closures
+  // Refs
   const videoRef       = useRef<HTMLVideoElement>(null);
   const canvasRef      = useRef<HTMLCanvasElement>(null);
   const streamRef      = useRef<MediaStream | null>(null);
@@ -222,7 +245,7 @@ const Inner: React.FC<Props> = ({
     return () => clearInterval(id);
   }, [recording]);
 
-  // ── Camera lifecycle ──
+  // Camera lifecycle
 
   const stopCamera = useCallback(() => {
     if (animRef.current) { cancelAnimationFrame(animRef.current); animRef.current = 0; }
@@ -263,7 +286,7 @@ const Inner: React.FC<Props> = ({
     setFacing((f) => (f === 'user' ? 'environment' : 'user'));
   }, [stopCamera]);
 
-  // ── Image capture ──
+  // Image capture
 
   const captureImage = useCallback(async () => {
     const cv = canvasRef.current;
@@ -296,7 +319,7 @@ const Inner: React.FC<Props> = ({
     }
   }, [maxCaptures]);
 
-  // ── Video recording ──
+  // Video recording
 
   const startRecording = useCallback(() => {
     const stream = streamRef.current;
@@ -358,7 +381,7 @@ const Inner: React.FC<Props> = ({
     if (rec && rec.state !== 'inactive') try { rec.stop(); } catch { /* ok */ }
   }, []);
 
-  // ── Upload & save ──
+  // Upload & save
 
   const acceptCapture = useCallback(async () => {
     const p = preview;
@@ -423,19 +446,18 @@ const Inner: React.FC<Props> = ({
     });
   }, [disabled]);
 
-  // ── Render helpers ──
+  // Render
 
-  const isVideo = mode === 'video';
-  const ModeIcon = isVideo ? <VideoCameraOutlined /> : <CameraOutlined />;
-  const label = isVideo ? 'Video' : 'Image';
+  const isVideoMode = mode === 'video';
+  const ModeIcon = isVideoMode ? <VideoCameraOutlined /> : <CameraOutlined />;
+  const label = isVideoMode ? 'Video' : 'Image';
 
-  // ── Small view (table / kanban cell) ──
-
+  // Small view (table / kanban cell)
   if (size === 'small') {
     return (
       <Space size={4}>
         {captures.map((c, i) =>
-          mimeOf(c).startsWith('video/') ? (
+          isVideoRec(c) ? (
             <Tooltip key={i} title={c.meta?.timestamp ?? c.filename ?? 'Video'}>
               <div style={{
                 width: 24, height: 24, background: token.colorFillSecondary, borderRadius: 2,
@@ -450,20 +472,19 @@ const Inner: React.FC<Props> = ({
               preview={{ mask: false, src: getUrl(c) }} />
           ),
         )}
-        {captures.length === 0 && <Text type="secondary">\u2014</Text>}
+        {captures.length === 0 && <Text type="secondary">{EM_DASH}</Text>}
       </Space>
     );
   }
 
-  // ── Full form view ──
-
+  // Full form view
   return (
     <div style={{
       border: `1px solid ${token.colorBorder}`, borderRadius: token.borderRadius,
       padding: token.paddingSM, background: token.colorBgContainer,
     }}>
       <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <Tag icon={ModeIcon} color={isVideo ? 'purple' : 'blue'} style={{ margin: 0 }}>
+        <Tag icon={ModeIcon} color={isVideoMode ? 'purple' : 'blue'} style={{ margin: 0 }}>
           {label} Capture
         </Tag>
         <Text type="secondary" style={{ fontSize: 12 }}>{captures.length}/{maxCaptures}</Text>
@@ -484,15 +505,15 @@ const Inner: React.FC<Props> = ({
                 ) : null}>
                   <Tooltip title={
                     <div style={{ fontSize: 11 }}>
-                      <div><ClockCircleOutlined /> {c.meta?.timestamp ?? '\u2014'}</div>
-                      <div><UserOutlined /> {c.meta?.userName ?? '\u2014'}</div>
+                      <div><ClockCircleOutlined /> {c.meta?.timestamp ?? EM_DASH}</div>
+                      <div><UserOutlined /> {c.meta?.userName ?? EM_DASH}</div>
                       {c.meta?.latitude != null && (
                         <div><EnvironmentOutlined /> {c.meta.latitude.toFixed(4)}, {c.meta.longitude?.toFixed(4)}</div>
                       )}
                       {c.meta?.durationMs != null && <div>Duration: {(c.meta.durationMs / 1000).toFixed(1)}s</div>}
                     </div>
                   }>
-                    {mimeOf(c).startsWith('video/') ? (
+                    {isVideoRec(c) ? (
                       <div style={{ position: 'relative', width: 80, height: 80 }}>
                         <video src={getUrl(c)} preload="metadata" muted playsInline
                           style={{
@@ -532,7 +553,7 @@ const Inner: React.FC<Props> = ({
             position: 'relative', background: '#000', borderRadius: token.borderRadius,
             overflow: 'hidden', marginBottom: 8,
           }}>
-            <video ref={videoRef} autoPlay playsInline muted={!isVideo}
+            <video ref={videoRef} autoPlay playsInline muted={!isVideoMode}
               style={{ width: '100%', maxHeight: 400, display: 'block' }} />
 
             {cameraOn && liveClock && (
@@ -562,7 +583,7 @@ const Inner: React.FC<Props> = ({
               display: 'flex', justifyContent: 'center', gap: 12, alignItems: 'center',
             }}>
               <Button shape="circle" size="large" icon={<SwapOutlined />} onClick={flipCamera} title="Flip" />
-              {!isVideo ? (
+              {!isVideoMode ? (
                 <Button shape="circle" size="large" type="primary" icon={<CameraOutlined />}
                   onClick={captureImage} loading={loading}
                   style={{ width: 64, height: 64, fontSize: 24 }} title="Capture" />
@@ -581,7 +602,7 @@ const Inner: React.FC<Props> = ({
 
           {preview && (
             <div style={{ marginTop: 8, textAlign: 'center' }}>
-              {mimeOf(preview).startsWith('video/') ? (
+              {isVideoRec(preview) ? (
                 <video src={preview.previewUrl} controls playsInline
                   style={{ maxWidth: '100%', maxHeight: 360, display: 'block', margin: '0 auto',
                     borderRadius: token.borderRadius, border: `2px solid ${token.colorSuccess}`, background: '#000' }} />
@@ -629,7 +650,7 @@ const Inner: React.FC<Props> = ({
 
       {captures.length === 0 && !cameraOn && !preview && (
         <Paragraph type="secondary" style={{ textAlign: 'center', marginTop: 16 }}>
-          {isVideo
+          {isVideoMode
             ? <VideoCameraOutlined style={{ fontSize: 28, display: 'block', marginBottom: 4 }} />
             : <CameraOutlined style={{ fontSize: 28, display: 'block', marginBottom: 4 }} />}
           No {label.toLowerCase()} captures yet

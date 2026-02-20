@@ -16,6 +16,7 @@ interface CaptureRecord {
   title?: string;
   mimeType?: string;
   mimetype?: string;
+  extname?: string;
   createdAt?: string;
   meta?: {
     timestamp?: string;
@@ -30,8 +31,29 @@ function getRawUrl(rec: CaptureRecord): string {
   return rec.url ?? rec.preview ?? rec.previewUrl ?? '';
 }
 
+/**
+ * Detect MIME type from the record. Checks direct mimetype fields first,
+ * then falls back to extension-based detection from extname / filename / url.
+ * This handles the case where NocoBase's attachments table may not populate
+ * mimetype for certain video formats.
+ */
 function mimeOf(rec: CaptureRecord | null | undefined): string {
-  return rec?.mimeType ?? rec?.mimetype ?? '';
+  const direct = rec?.mimeType ?? rec?.mimetype ?? '';
+  if (direct) return direct;
+  const hint = (rec?.extname ?? rec?.filename ?? rec?.url ?? '').toLowerCase();
+  if (/\.webm/.test(hint)) return 'video/webm';
+  if (/\.mp4/.test(hint)) return 'video/mp4';
+  if (/\.mov/.test(hint)) return 'video/quicktime';
+  if (/\.avi/.test(hint)) return 'video/x-msvideo';
+  if (/\.jpe?g/.test(hint)) return 'image/jpeg';
+  if (/\.png/.test(hint)) return 'image/png';
+  if (/\.gif/.test(hint)) return 'image/gif';
+  if (/\.webp/.test(hint)) return 'image/webp';
+  return '';
+}
+
+function isVideo(rec: CaptureRecord | null | undefined): boolean {
+  return mimeOf(rec).startsWith('video/');
 }
 
 function resolveUrl(raw: string, client: APIClient): string {
@@ -59,7 +81,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
 
   if (captures.length === 0) {
     return size === 'small'
-      ? <Text type="secondary">\u2014</Text>
+      ? <Text type="secondary">{String.fromCharCode(8212)}</Text>
       : <Empty description="No captures" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
   }
 
@@ -70,10 +92,10 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
 
   const videoModal = (
     <Modal
-      open={!!modal && mimeOf(modal).startsWith('video/')}
+      open={!!modal && isVideo(modal)}
       onCancel={() => setModal(null)}
       footer={null}
-      width={size === 'small' ? 680 : 720}
+      width={720}
       title={
         <Space>
           <VideoCameraOutlined style={{ color: token.colorPrimary }} />
@@ -87,8 +109,19 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
     >
       {modal && (
         <>
-          <video src={modalUrl} controls autoPlay playsInline
-            style={{ width: '100%', maxHeight: size === 'small' ? 480 : 500, display: 'block', borderRadius: token.borderRadius, background: '#000' }} />
+          <video
+            src={modalUrl}
+            controls
+            autoPlay
+            playsInline
+            style={{
+              width: '100%',
+              maxHeight: 500,
+              display: 'block',
+              borderRadius: token.borderRadius,
+              background: '#000',
+            }}
+          />
           <div style={{ marginTop: 10, fontSize: 12, color: token.colorTextSecondary }}>
             {modal.meta?.userName && <div><UserOutlined style={{ marginRight: 4 }} />{modal.meta.userName}</div>}
             {modal.meta?.latitude != null && (
@@ -100,15 +133,15 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
     </Modal>
   );
 
-  // ── Small view ──
+  // Small view (table / kanban)
   if (size === 'small') {
     return (
       <>
         <Space size={4}>
           {captures.map((c, i) => {
             const url = getUrl(c);
-            return mimeOf(c).startsWith('video/') ? (
-              <Tooltip key={i} title={c.meta?.timestamp ?? 'Video'}>
+            return isVideo(c) ? (
+              <Tooltip key={i} title={c.meta?.timestamp ?? c.filename ?? 'Video'}>
                 <div onClick={() => setModal(c)} style={{
                   width: 24, height: 24, background: token.colorFillSecondary, borderRadius: 2,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
@@ -128,7 +161,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
     );
   }
 
-  // ── Full view ──
+  // Full view (detail / read-only form)
   return (
     <>
       <div style={{
@@ -141,14 +174,14 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
         <Image.PreviewGroup>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
             {captures.map((c, i) => {
-              const isVid = mimeOf(c).startsWith('video/');
+              const vid = isVideo(c);
               const url = getUrl(c);
               return (
                 <div key={i} style={{
                   border: `1px solid ${token.colorBorder}`, borderRadius: token.borderRadius,
                   overflow: 'hidden', width: 200, background: token.colorBgLayout,
                 }}>
-                  {isVid ? (
+                  {vid ? (
                     <div style={{ position: 'relative', width: 200, height: 150, cursor: 'pointer' }}
                       onClick={() => setModal(c)}>
                       <video src={url} preload="metadata" muted playsInline
@@ -169,13 +202,13 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
                       <ClockCircleOutlined style={{ marginRight: 4, color: token.colorWarning }} />
                       {c.meta?.timestamp ?? (c.createdAt
                         ? new Date(c.createdAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
-                        : '\u2014')}
+                        : String.fromCharCode(8212))}
                     </div>
-                    <div><UserOutlined style={{ marginRight: 4 }} />{c.meta?.userName ?? c.title ?? c.filename ?? '\u2014'}</div>
+                    <div><UserOutlined style={{ marginRight: 4 }} />{c.meta?.userName ?? c.title ?? c.filename ?? String.fromCharCode(8212)}</div>
                     {c.meta?.latitude != null && (
                       <div><EnvironmentOutlined style={{ marginRight: 4 }} />{c.meta.latitude.toFixed(4)}, {c.meta.longitude?.toFixed(4)}</div>
                     )}
-                    {isVid && c.meta?.durationMs != null && (
+                    {vid && c.meta?.durationMs != null && (
                       <div><PlayCircleOutlined style={{ marginRight: 4 }} />{(c.meta.durationMs / 1000).toFixed(1)}s</div>
                     )}
                   </div>
