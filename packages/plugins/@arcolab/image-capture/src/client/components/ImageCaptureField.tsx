@@ -6,15 +6,15 @@ import {
 } from 'antd';
 import {
   CameraOutlined, CheckCircleOutlined, ClockCircleOutlined,
-  DeleteOutlined, EnvironmentOutlined, PlayCircleOutlined,
-  ReloadOutlined, StopOutlined, SwapOutlined,
-  UserOutlined, VideoCameraOutlined,
+  DeleteOutlined, DownloadOutlined, EnvironmentOutlined,
+  PlayCircleOutlined, ReloadOutlined, StopOutlined,
+  SwapOutlined, UserOutlined, VideoCameraOutlined,
 } from '@ant-design/icons';
 import { ImageCaptureReadPretty } from './ImageCaptureReadPretty';
 
 const { Text, Paragraph } = Typography;
 
-// ── Types ──────────────────────────────────────────────────────
+/* ── Types ──────────────────────────────────────────────────── */
 
 export type CaptureMode = 'image' | 'video';
 
@@ -46,6 +46,8 @@ export interface CaptureRecord {
   mimeType?: string;
   mimetype?: string;
   meta?: CaptureMetadata | Record<string, unknown>;
+  /** Local-only: thumbnail data-URL captured from the canvas */
+  _thumb?: string;
 }
 
 interface CanvasWithCaptureStream extends HTMLCanvasElement {
@@ -58,47 +60,35 @@ interface UserInfo {
   username?: string;
 }
 
-// ── Helpers ────────────────────────────────────────────────────
+/* ── Helpers ────────────────────────────────────────────────── */
 
 function getRawUrl(rec: CaptureRecord): string {
   return rec.url ?? rec.previewUrl ?? rec.preview ?? '';
 }
 
-/**
- * Resolve a storage-relative URL to a full URL.
- * Matches NocoBase core toItem() pattern – always use location.origin.
- */
+/** Resolve relative URL → absolute, matching NocoBase toItem() */
 function resolveUrl(raw: string): string {
   if (!raw) return '';
   if (/^(https?:|blob:|data:)/.test(raw)) return raw;
   return `${window.location.origin}/${raw.replace(/^\//, '')}`;
 }
 
-const VIDEO_EXT_RE = /\.(webm|mp4|mov|avi|mkv|ogg)(\?|$)/i;
+const VIDEO_EXT = /\.(webm|mp4|mov|avi|mkv|ogg)(\?|$)/i;
 
-/**
- * Ultra-robust video detection. Checks every possible signal.
- */
 function isVideoRec(rec: CaptureRecord | null | undefined): boolean {
   if (!rec) return false;
-  // 1. Our custom meta field (set during recording, lost after page reload)
-  const meta = rec.meta as CaptureMetadata | undefined;
-  if (meta?.mode === 'video') return true;
-  // 2. Direct MIME type fields
+  const m = rec.meta as CaptureMetadata | undefined;
+  if (m?.mode === 'video') return true;
   const mt = (rec.mimeType || rec.mimetype || '').toLowerCase();
   if (mt.startsWith('video/')) return true;
-  // 3. Extension in extname / filename / url
-  const hint = `${rec.extname || ''} ${rec.filename || ''} ${rec.url || ''}`.toLowerCase();
-  if (VIDEO_EXT_RE.test(hint)) return true;
-  // 4. Our filename convention
-  if (rec.filename && rec.filename.startsWith('video_')) return true;
+  const hint = `${rec.extname || ''} ${rec.filename || ''} ${rec.url || ''}`;
+  if (VIDEO_EXT.test(hint)) return true;
+  if (rec.filename?.startsWith('video_')) return true;
   return false;
 }
 
-/** Strip codec params: "video/webm;codecs=vp9" → "video/webm" */
 function baseMime(rec: CaptureRecord | null | undefined): string {
-  const mt = (rec?.mimeType || rec?.mimetype || '');
-  return mt.split(';')[0].trim();
+  return (rec?.mimeType || rec?.mimetype || '').split(';')[0].trim();
 }
 
 function getISTTimestamp(): string {
@@ -110,33 +100,26 @@ function getISTTimestamp(): string {
   });
 }
 
-async function computeSHA256(buffer: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', buffer);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+async function computeSHA256(buf: ArrayBuffer): Promise<string> {
+  const d = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function drawTimestamp(
-  ctx: CanvasRenderingContext2D, w: number, h: number, ts: string,
-): void {
+function drawTimestamp(ctx: CanvasRenderingContext2D, w: number, h: number, ts: string) {
   const fs = Math.max(14, Math.floor(w * 0.022));
   ctx.font = `bold ${fs}px monospace`;
   const tw = ctx.measureText(ts).width;
   const pad = 10;
-  const x = w - tw - pad * 2;
-  const y = h - pad * 2;
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(x - pad, y - fs, tw + pad * 2, fs + pad);
+  ctx.fillRect(w - tw - pad * 3, h - fs - pad * 2, tw + pad * 2, fs + pad);
   ctx.fillStyle = '#FADB14';
-  ctx.fillText(ts, x, y);
+  ctx.fillText(ts, w - tw - pad * 2, h - pad * 2);
 }
 
-function getSupportedVideoMime(): string {
+function getSupportedMime(): string {
   if (typeof MediaRecorder === 'undefined') return 'video/mp4';
-  for (const m of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) {
+  for (const m of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'])
     if (MediaRecorder.isTypeSupported(m)) return m;
-  }
   return 'video/mp4';
 }
 
@@ -159,7 +142,14 @@ function buildMeta(
 
 const EM_DASH = '\u2014';
 
-// ── Props ──────────────────────────────────────────────────────
+function fmtDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return m > 0 ? `${m}:${sec.toString().padStart(2, '0')}` : `0:${sec.toString().padStart(2, '0')}`;
+}
+
+/* ── Props ──────────────────────────────────────────────────── */
 
 interface Props {
   value?: CaptureRecord[];
@@ -172,7 +162,7 @@ interface Props {
   size?: 'small' | 'default';
 }
 
-// ── Component ──────────────────────────────────────────────────
+/* ── Component ──────────────────────────────────────────────── */
 
 const Inner: React.FC<Props> = ({
   value, onChange, disabled = false, mode = 'image',
@@ -181,29 +171,29 @@ const Inner: React.FC<Props> = ({
 }) => {
   const { token } = theme.useToken();
   const api = useAPIClient();
-  const getUrl = useCallback(
-    (rec: CaptureRecord) => resolveUrl(getRawUrl(rec)), [],
-  );
+  const getUrl = useCallback((rec: CaptureRecord) => resolveUrl(getRawUrl(rec)), []);
 
-  // ── Refs ──
-  const videoRef       = useRef<HTMLVideoElement>(null);
-  const canvasRef      = useRef<HTMLCanvasElement>(null);
-  const streamRef      = useRef<MediaStream | null>(null);
-  const recorderRef    = useRef<MediaRecorder | null>(null);
-  const chunksRef      = useRef<Blob[]>([]);
-  const animRef        = useRef(0);
-  const recStartRef    = useRef(0);
-  const recTsRef       = useRef('');
-  const mountedRef     = useRef(true);
-  const capturesRef    = useRef<CaptureRecord[]>([]);
-  const onChangeRef    = useRef(onChange);
-  const userRef        = useRef(currentUser);
-  const geoRef         = useRef<GeolocationPosition | null>(null);
+  /* ── Refs ── */
+  const videoRef    = useRef<HTMLVideoElement>(null);
+  const canvasRef   = useRef<HTMLCanvasElement>(null);
+  const streamRef   = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef   = useRef<Blob[]>([]);
+  const animRef     = useRef(0);
+  const recStartRef = useRef(0);
+  const recTsRef    = useRef('');
+  const mountedRef  = useRef(true);
+  const capturesRef = useRef<CaptureRecord[]>([]);
+  const onChangeRef = useRef(onChange);
+  const userRef     = useRef(currentUser);
+  const geoRef      = useRef<GeolocationPosition | null>(null);
+  /** Session-only thumbnails: serverUrl → dataURL */
+  const thumbsRef   = useRef<Record<string, string>>({});
 
   useEffect(() => { onChangeRef.current = onChange; });
   useEffect(() => { userRef.current = currentUser; });
 
-  // ── State ──
+  /* ── State ── */
   const [captures, setCaptures]     = useState<CaptureRecord[]>(value ?? []);
   const [cameraOn, setCameraOn]     = useState(false);
   const [preview, setPreview]       = useState<CaptureRecord | null>(null);
@@ -213,34 +203,25 @@ const Inner: React.FC<Props> = ({
   const [recording, setRecording]   = useState(false);
   const [liveClock, setLiveClock]   = useState('');
   const [elapsed, setElapsed]       = useState(0);
-  const [playback, setPlayback]     = useState<CaptureRecord | null>(null); // video playback modal
-  const [playError, setPlayError]   = useState(false);
+  const [playback, setPlayback]     = useState<CaptureRecord | null>(null);
 
   useEffect(() => { capturesRef.current = captures; }, [captures]);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
-  // Sync external value → local state (skip if our own onChange just fired)
+  /* Sync external value → local, skip if our own onChange just fired */
   useEffect(() => {
-    const incoming = value ?? [];
+    const inc = value ?? [];
     const cur = capturesRef.current;
-    if (
-      incoming.length !== cur.length ||
-      incoming[0]?.id !== cur[0]?.id ||
-      incoming[incoming.length - 1]?.id !== cur[cur.length - 1]?.id
-    ) {
-      setCaptures(incoming);
-    }
+    if (inc.length !== cur.length || inc[0]?.id !== cur[0]?.id ||
+        inc[inc.length - 1]?.id !== cur[cur.length - 1]?.id)
+      setCaptures(inc);
   }, [value]);
 
   useEffect(() => {
     if (!enableGeolocation || !navigator.geolocation) return;
-    let active = true;
-    navigator.geolocation.getCurrentPosition(
-      (pos) => { if (active) geoRef.current = pos; },
-      () => {},
-      { enableHighAccuracy: true, timeout: 10_000 },
-    );
-    return () => { active = false; };
+    let a = true;
+    navigator.geolocation.getCurrentPosition(p => { if (a) geoRef.current = p; }, () => {}, { enableHighAccuracy: true, timeout: 10_000 });
+    return () => { a = false; };
   }, [enableGeolocation]);
 
   useEffect(() => {
@@ -258,52 +239,46 @@ const Inner: React.FC<Props> = ({
     return () => clearInterval(id);
   }, [recording]);
 
-  // ── Camera lifecycle ──
+  /* ── Camera ── */
 
   const stopCamera = useCallback(() => {
     if (animRef.current) { cancelAnimationFrame(animRef.current); animRef.current = 0; }
-    const rec = recorderRef.current;
-    if (rec && rec.state !== 'inactive') try { rec.stop(); } catch { /* already stopped */ }
+    const r = recorderRef.current;
+    if (r && r.state !== 'inactive') try { r.stop(); } catch {}
     recorderRef.current = null;
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
-    setCameraOn(false);
-    setRecording(false);
+    setCameraOn(false); setRecording(false);
   }, []);
 
   useEffect(() => stopCamera, [stopCamera]);
 
   const startCamera = useCallback(async () => {
-    setError(null);
-    setPreview(null);
+    setError(null); setPreview(null);
     if (!navigator.mediaDevices?.getUserMedia) { setError('Camera not supported.'); return; }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: mode === 'video',
       });
-      if (!mountedRef.current) { stream.getTracks().forEach((t) => t.stop()); return; }
+      if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); return; }
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
       setCameraOn(true);
-    } catch (err: unknown) {
+    } catch (e: unknown) {
       if (!mountedRef.current) return;
-      const denied = err instanceof DOMException && err.name === 'NotAllowedError';
-      setError(denied ? 'Camera access denied.' : `Camera error: ${err instanceof Error ? err.message : String(err)}`);
+      setError(e instanceof DOMException && e.name === 'NotAllowedError'
+        ? 'Camera access denied.' : `Camera error: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [facing, mode]);
 
-  const flipCamera = useCallback(() => {
-    stopCamera();
-    setFacing((f) => (f === 'user' ? 'environment' : 'user'));
-  }, [stopCamera]);
+  const flipCamera = useCallback(() => { stopCamera(); setFacing(f => f === 'user' ? 'environment' : 'user'); }, [stopCamera]);
 
-  // ── Image capture ──
+  /* ── Image capture ── */
 
   const captureImage = useCallback(async () => {
-    const cv = canvasRef.current;
-    const vd = videoRef.current;
+    const cv = canvasRef.current, vd = videoRef.current;
     if (!cv || !vd || capturesRef.current.length >= maxCaptures) return;
     const ctx = cv.getContext('2d');
     if (!ctx) { setError('Canvas unavailable.'); return; }
@@ -314,37 +289,31 @@ const Inner: React.FC<Props> = ({
       ctx.drawImage(vd, 0, 0);
       drawTimestamp(ctx, cv.width, cv.height, ts);
       const blob = await new Promise<Blob>((ok, fail) =>
-        cv.toBlob((b) => (b ? ok(b) : fail(new Error('toBlob failed'))), 'image/jpeg', 0.92),
-      );
+        cv.toBlob(b => (b ? ok(b) : fail(new Error('toBlob failed'))), 'image/jpeg', 0.92));
       const hash = await computeSHA256(await blob.arrayBuffer());
       if (!mountedRef.current) return;
       const idx = capturesRef.current.length + 1;
       setPreview({
         blob, previewUrl: URL.createObjectURL(blob),
-        filename: `capture_${Date.now()}_${idx}.jpg`,
-        extname: '.jpg',
+        filename: `capture_${Date.now()}_${idx}.jpg`, extname: '.jpg',
         mimeType: 'image/jpeg', mimetype: 'image/jpeg',
         meta: buildMeta('image', ts, idx, userRef.current, geoRef.current, { imageHash: hash }),
       });
-    } catch (err: unknown) {
-      if (mountedRef.current) setError(`Capture failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
+    } catch (e: unknown) {
+      if (mountedRef.current) setError(`Capture failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { if (mountedRef.current) setLoading(false); }
   }, [maxCaptures]);
 
-  // ── Video recording ──
+  /* ── Video recording ── */
 
   const startRecording = useCallback(() => {
-    const stream = streamRef.current;
-    const vd = videoRef.current;
+    const stream = streamRef.current, vd = videoRef.current;
     if (!stream || !vd || recording) return;
     chunksRef.current = [];
     recTsRef.current = getISTTimestamp();
     recStartRef.current = Date.now();
     const w = vd.videoWidth || 1280, h = vd.videoHeight || 720;
-    const oc = document.createElement('canvas');
-    oc.width = w; oc.height = h;
+    const oc = document.createElement('canvas'); oc.width = w; oc.height = h;
     const octx = oc.getContext('2d');
     if (!octx) { setError('Canvas unavailable.'); return; }
     const draw = () => {
@@ -358,16 +327,19 @@ const Inner: React.FC<Props> = ({
     const cs = oc as unknown as CanvasWithCaptureStream;
     if (typeof cs.captureStream === 'function') {
       recStream = cs.captureStream(30);
-      stream.getAudioTracks().forEach((t) => recStream.addTrack(t));
+      stream.getAudioTracks().forEach(t => recStream.addTrack(t));
     }
-    const mime = getSupportedVideoMime();
+    const mime = getSupportedMime();
     let recorder: MediaRecorder;
     try { recorder = new MediaRecorder(recStream, { mimeType: mime }); }
     catch { recorder = new MediaRecorder(recStream); }
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
     recorder.onstop = () => {
       if (animRef.current) { cancelAnimationFrame(animRef.current); animRef.current = 0; }
       if (!mountedRef.current) return;
+      /* ── Capture thumbnail from the overlay canvas (last frame with timestamp) ── */
+      let thumbData = '';
+      try { thumbData = oc.toDataURL('image/jpeg', 0.65); } catch {}
       const actual = recorder.mimeType || mime;
       const ext = actual.includes('mp4') ? 'mp4' : 'webm';
       const blob = new Blob(chunksRef.current, { type: actual });
@@ -375,28 +347,25 @@ const Inner: React.FC<Props> = ({
       const idx = capturesRef.current.length + 1;
       setPreview({
         blob, previewUrl: URL.createObjectURL(blob),
-        filename: `video_${Date.now()}_${idx}.${ext}`,
-        extname: `.${ext}`,
+        filename: `video_${Date.now()}_${idx}.${ext}`, extname: `.${ext}`,
         mimeType: actual, mimetype: actual,
+        _thumb: thumbData,
         meta: buildMeta('video', recTsRef.current, idx, userRef.current, geoRef.current, { durationMs: dur }),
       });
       setRecording(false);
     };
-    recorder.onerror = () => {
-      if (mountedRef.current) setError('Recording error.');
-      setRecording(false);
-    };
+    recorder.onerror = () => { if (mountedRef.current) setError('Recording error.'); setRecording(false); };
     recorder.start(1_000);
     recorderRef.current = recorder;
     setRecording(true);
   }, [recording]);
 
   const stopRecording = useCallback(() => {
-    const rec = recorderRef.current;
-    if (rec && rec.state !== 'inactive') try { rec.stop(); } catch { /* ok */ }
+    const r = recorderRef.current;
+    if (r && r.state !== 'inactive') try { r.stop(); } catch {}
   }, []);
 
-  // ── Upload & save ──
+  /* ── Upload & save ── */
 
   const acceptCapture = useCallback(async () => {
     const p = preview;
@@ -405,53 +374,45 @@ const Inner: React.FC<Props> = ({
     try {
       const fd = new FormData();
       fd.append('file', p.blob, p.filename ?? `capture_${Date.now()}.bin`);
-      const { data: responseBody } = await api.axios.post('attachments:create', fd);
-      const att = responseBody?.data;
-      if (!att?.id) {
-        setError('Upload failed: server did not return an attachment record.');
-        return;
-      }
-
-      // Resolve URL matching NocoBase toItem() pattern
+      const { data: body } = await api.axios.post('attachments:create', fd);
+      const att = body?.data;
+      if (!att?.id) { setError('Upload failed.'); return; }
       const rawUrl = att.url ?? '';
       const fullUrl = rawUrl.startsWith('http') ? rawUrl : `${location.origin}/${rawUrl.replace(/^\//, '')}`;
 
-      // Build record — spread ALL server fields + our custom fields
+      /* Store thumbnail for this session */
+      if (p._thumb) thumbsRef.current[fullUrl] = p._thumb;
+
       const rec: CaptureRecord = {
-        ...att,            // id, filename, title, extname, mimetype, size, path, url, etc.
-        url: fullUrl,      // override with fully resolved URL
+        ...att, url: fullUrl,
         mimeType: att.mimetype ?? p.mimeType,
         mimetype: att.mimetype ?? p.mimetype,
         meta: p.meta,
       };
-
-      // Fire-and-forget audit log
       api.axios.post('imageCaptureAudit:create', {
-        attachmentId: att.id, capturedAt: p.meta?.timestamp,
-        capturedById: p.meta?.userId, capturedByName: p.meta?.userName,
-        latitude: p.meta?.latitude, longitude: p.meta?.longitude,
-        accuracy: p.meta?.accuracy, deviceInfo: p.meta?.deviceInfo,
-        captureIndex: p.meta?.captureIndex, imageHash: p.meta?.imageHash,
-        action: p.meta?.mode === 'video' ? 'VIDEO_CAPTURE' : 'IMAGE_CAPTURE',
+        attachmentId: att.id, capturedAt: (p.meta as CaptureMetadata)?.timestamp,
+        capturedById: (p.meta as CaptureMetadata)?.userId,
+        capturedByName: (p.meta as CaptureMetadata)?.userName,
+        latitude: (p.meta as CaptureMetadata)?.latitude,
+        longitude: (p.meta as CaptureMetadata)?.longitude,
+        accuracy: (p.meta as CaptureMetadata)?.accuracy,
+        deviceInfo: (p.meta as CaptureMetadata)?.deviceInfo,
+        captureIndex: (p.meta as CaptureMetadata)?.captureIndex,
+        imageHash: (p.meta as CaptureMetadata)?.imageHash,
+        action: (p.meta as CaptureMetadata)?.mode === 'video' ? 'VIDEO_CAPTURE' : 'IMAGE_CAPTURE',
         metadata: p.meta,
       }).catch(() => {});
-
       if (!mountedRef.current) return;
-
-      // Update state — ref first, then setState, then Formily onChange
       const next = [...capturesRef.current, rec];
       capturesRef.current = next;
       setCaptures(next);
       onChangeRef.current?.(next);
-
       if (p.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(p.previewUrl);
       setPreview(null);
       if (next.length >= maxCaptures) stopCamera();
-    } catch (err: unknown) {
-      if (mountedRef.current) setError(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
+    } catch (e: unknown) {
+      if (mountedRef.current) setError(`Upload failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { if (mountedRef.current) setLoading(false); }
   }, [preview, api, maxCaptures, stopCamera]);
 
   const retake = useCallback(() => {
@@ -466,155 +427,136 @@ const Inner: React.FC<Props> = ({
       content: 'This capture will be removed. The audit record is preserved.',
       onOk: () => {
         const next = capturesRef.current.filter((_, j) => j !== i);
-        capturesRef.current = next;
-        setCaptures(next);
-        onChangeRef.current?.(next);
+        capturesRef.current = next; setCaptures(next); onChangeRef.current?.(next);
       },
     });
   }, [disabled]);
 
-  // ── Render helpers ──
+  /* ── Render ── */
 
   const isVideoMode = mode === 'video';
   const ModeIcon = isVideoMode ? <VideoCameraOutlined /> : <CameraOutlined />;
   const label = isVideoMode ? 'Video' : 'Image';
 
-  const openPlayback = (c: CaptureRecord) => { setPlayError(false); setPlayback(c); };
-  const closePlayback = () => { setPlayback(null); setPlayError(false); };
+  const openPlay = (c: CaptureRecord) => setPlayback(c);
+  const closePlay = () => setPlayback(null);
 
-  const playbackUrl = playback ? getUrl(playback) : '';
-  const playbackMime = baseMime(playback);
+  const playUrl = playback ? getUrl(playback) : '';
   const pbMeta = playback?.meta as CaptureMetadata | undefined;
 
-  const videoPlaybackModal = (
-    <Modal
-      open={!!playback}
-      onCancel={closePlayback}
-      footer={null}
-      width={720}
-      title={
-        <Space>
-          <VideoCameraOutlined style={{ color: token.colorPrimary }} />
-          <Text strong>Video Playback</Text>
-          {pbMeta?.timestamp && (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              <ClockCircleOutlined style={{ marginRight: 4 }} />{pbMeta.timestamp}
-            </Text>
-          )}
-          {pbMeta?.durationMs != null && (
-            <Tag color="purple">{(pbMeta.durationMs / 1000).toFixed(1)}s</Tag>
-          )}
-        </Space>
-      }
-      destroyOnClose
-      centered
+  /* ── Video thumbnail component ── */
+  const VideoThumb: React.FC<{ c: CaptureRecord; w: number; h: number }> = ({ c, w, h }) => {
+    const url = getUrl(c);
+    const thumb = thumbsRef.current[url];
+    const dur = (c.meta as CaptureMetadata)?.durationMs;
+    return (
+      <div onClick={() => openPlay(c)} style={{
+        position: 'relative', width: w, height: h, cursor: 'pointer',
+        borderRadius: 6, overflow: 'hidden',
+        background: thumb ? undefined : 'linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%)',
+        border: `2px solid ${token.colorPrimary}`,
+      }}>
+        {thumb ? (
+          <img src={thumb} alt="" style={{ width: w, height: h, objectFit: 'cover', display: 'block' }} />
+        ) : (
+          <div style={{ width: w, height: h, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <VideoCameraOutlined style={{ fontSize: Math.max(16, w * 0.3), color: 'rgba(255,255,255,0.15)' }} />
+          </div>
+        )}
+        {/* Play overlay */}
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: thumb ? 'rgba(0,0,0,0.2)' : 'transparent',
+          transition: 'background 0.2s',
+        }}>
+          <div style={{
+            width: Math.max(20, w * 0.35), height: Math.max(20, w * 0.35),
+            borderRadius: '50%', background: 'rgba(255,255,255,0.9)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+          }}>
+            <span style={{ fontSize: Math.max(10, w * 0.18), color: token.colorPrimary, marginLeft: 2 }}>▶</span>
+          </div>
+        </div>
+        {/* Duration badge */}
+        {dur != null && w >= 60 && (
+          <div style={{
+            position: 'absolute', bottom: 4, right: 4, fontSize: 10, fontWeight: 600,
+            color: '#fff', background: 'rgba(0,0,0,0.7)',
+            padding: '1px 5px', borderRadius: 3, letterSpacing: 0.5,
+          }}>
+            {fmtDuration(dur)}
+          </div>
+        )}
+        {/* VIDEO label */}
+        {w >= 60 && (
+          <div style={{
+            position: 'absolute', top: 4, left: 4, fontSize: 9, fontWeight: 700,
+            color: '#fff', background: token.colorPrimary,
+            padding: '1px 5px', borderRadius: 3, textTransform: 'uppercase', letterSpacing: 0.5,
+          }}>Video</div>
+        )}
+      </div>
+    );
+  };
+
+  /* ── Playback modal ── */
+  const playbackModal = (
+    <Modal open={!!playback} onCancel={closePlay} footer={null} width={760}
+      title={<Space><VideoCameraOutlined style={{ color: token.colorPrimary }} /><Text strong>Video Playback</Text>
+        {pbMeta?.timestamp && <Text type="secondary" style={{ fontSize: 12 }}><ClockCircleOutlined style={{ marginRight: 4 }} />{pbMeta.timestamp}</Text>}
+        {pbMeta?.durationMs != null && <Tag color="purple">{fmtDuration(pbMeta.durationMs)}</Tag>}
+      </Space>}
+      destroyOnClose centered
     >
-      {playback && !playError && (
+      {playback && (
         <>
+          {/* ── VIDEO PLAYER: use src= directly (NO <source> — React error bubbling breaks it) ── */}
           <video
-            key={playbackUrl}
-            controls autoPlay playsInline
-            onError={() => setPlayError(true)}
+            src={playUrl}
+            controls
+            autoPlay
+            playsInline
             style={{
               width: '100%', maxHeight: 500, display: 'block',
               borderRadius: token.borderRadius, background: '#000',
             }}
-          >
-            <source src={playbackUrl} type={playbackMime || 'video/webm'} />
-            <source src={playbackUrl} />
-            Your browser does not support video playback.
-          </video>
-          <div style={{ marginTop: 10, fontSize: 12, color: token.colorTextSecondary }}>
-            {pbMeta?.userName && (
-              <div><UserOutlined style={{ marginRight: 4 }} />{pbMeta.userName}</div>
-            )}
-            {pbMeta?.latitude != null && (
-              <div>
-                <EnvironmentOutlined style={{ marginRight: 4 }} />
-                {pbMeta.latitude.toFixed(4)}, {pbMeta.longitude?.toFixed(4)}
-              </div>
-            )}
+          />
+          <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
+              {pbMeta?.userName && <span><UserOutlined style={{ marginRight: 4 }} />{pbMeta.userName}</span>}
+              {pbMeta?.latitude != null && (
+                <span style={{ marginLeft: 12 }}><EnvironmentOutlined style={{ marginRight: 4 }} />{pbMeta.latitude.toFixed(4)}, {pbMeta.longitude?.toFixed(4)}</span>
+              )}
+            </div>
+            <a href={playUrl} download style={{ fontSize: 12 }}><DownloadOutlined style={{ marginRight: 4 }} />Download</a>
           </div>
         </>
-      )}
-      {playback && playError && (
-        <div style={{ textAlign: 'center', padding: 40 }}>
-          <VideoCameraOutlined style={{ fontSize: 48, color: token.colorTextDisabled }} />
-          <div style={{ marginTop: 12, color: token.colorTextSecondary }}>
-            Unable to play this video in the browser.
-          </div>
-          <a href={playbackUrl} download style={{ marginTop: 8, display: 'inline-block' }}>
-            Download video file
-          </a>
-        </div>
       )}
     </Modal>
   );
 
-  // ── Video icon thumbnail (reused in both small and full view) ──
-
-  const videoThumb = (c: CaptureRecord, w: number, h: number) => (
-    <div
-      onClick={() => openPlayback(c)}
-      style={{
-        position: 'relative', width: w, height: h,
-        background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
-        borderRadius: 4, border: `2px solid ${token.colorPrimary}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        cursor: 'pointer', overflow: 'hidden',
-      }}
-    >
-      <VideoCameraOutlined style={{ fontSize: Math.max(14, w * 0.35), color: 'rgba(255,255,255,0.3)' }} />
-      <PlayCircleOutlined style={{
-        position: 'absolute', top: '50%', left: '50%',
-        transform: 'translate(-50%,-50%)',
-        fontSize: Math.max(14, w * 0.28), color: 'rgba(255,255,255,0.9)',
-      }} />
-      {(c.meta as CaptureMetadata)?.durationMs != null && (
-        <div style={{
-          position: 'absolute', bottom: 2, right: 4,
-          fontSize: 9, color: '#fff', background: 'rgba(0,0,0,0.6)',
-          padding: '0 3px', borderRadius: 2,
-        }}>
-          {((c.meta as CaptureMetadata).durationMs! / 1000).toFixed(0)}s
-        </div>
-      )}
-    </div>
-  );
-
-  // ── Small view (table / kanban cell) ──
+  /* ── Small view ── */
   if (size === 'small') {
     return (
       <>
         <Space size={4}>
-          {captures.map((c, i) =>
-            isVideoRec(c) ? (
-              <Tooltip key={i} title={(c.meta as CaptureMetadata)?.timestamp ?? c.filename ?? 'Video'}>
-                {videoThumb(c, 24, 24)}
-              </Tooltip>
-            ) : (
-              <Image key={i} src={getUrl(c)} width={24} height={24}
-                style={{ objectFit: 'cover', borderRadius: 2 }}
-                preview={{ mask: false, src: getUrl(c) }} />
-            ),
+          {captures.map((c, i) => isVideoRec(c)
+            ? <Tooltip key={i} title={(c.meta as CaptureMetadata)?.timestamp ?? c.filename ?? 'Video'}><VideoThumb c={c} w={24} h={24} /></Tooltip>
+            : <Image key={i} src={getUrl(c)} width={24} height={24} style={{ objectFit: 'cover', borderRadius: 2 }} preview={{ mask: false, src: getUrl(c) }} />
           )}
           {captures.length === 0 && <Text type="secondary">{EM_DASH}</Text>}
         </Space>
-        {videoPlaybackModal}
+        {playbackModal}
       </>
     );
   }
 
-  // ── Full form view ──
+  /* ── Full form view ── */
   return (
-    <div style={{
-      border: `1px solid ${token.colorBorder}`, borderRadius: token.borderRadius,
-      padding: token.paddingSM, background: token.colorBgContainer,
-    }}>
+    <div style={{ border: `1px solid ${token.colorBorder}`, borderRadius: token.borderRadius, padding: token.paddingSM, background: token.colorBgContainer }}>
       <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <Tag icon={ModeIcon} color={isVideoMode ? 'purple' : 'blue'} style={{ margin: 0 }}>
-          {label} Capture
-        </Tag>
+        <Tag icon={ModeIcon} color={isVideoMode ? 'purple' : 'blue'} style={{ margin: 0 }}>{label} Capture</Tag>
         <Text type="secondary" style={{ fontSize: 12 }}>{captures.length}/{maxCaptures}</Text>
       </div>
 
@@ -627,26 +569,21 @@ const Inner: React.FC<Props> = ({
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {captures.map((c, i) => (
                 <Badge key={i} count={!disabled ? (
-                  <DeleteOutlined style={{
-                    color: token.colorError, fontSize: 14, cursor: 'pointer',
-                    background: '#fff', borderRadius: '50%', padding: 2,
-                  }} onClick={() => deleteCapture(i)} />
+                  <DeleteOutlined style={{ color: token.colorError, fontSize: 14, cursor: 'pointer', background: '#fff', borderRadius: '50%', padding: 2 }}
+                    onClick={() => deleteCapture(i)} />
                 ) : null}>
-                  <Tooltip title={
-                    <div style={{ fontSize: 11 }}>
-                      <div><ClockCircleOutlined /> {(c.meta as CaptureMetadata)?.timestamp ?? EM_DASH}</div>
-                      <div><UserOutlined /> {(c.meta as CaptureMetadata)?.userName ?? EM_DASH}</div>
-                      {(c.meta as CaptureMetadata)?.latitude != null && (
-                        <div><EnvironmentOutlined /> {(c.meta as CaptureMetadata)!.latitude!.toFixed(4)}, {(c.meta as CaptureMetadata)!.longitude?.toFixed(4)}</div>
-                      )}
-                      {(c.meta as CaptureMetadata)?.durationMs != null && <div>Duration: {((c.meta as CaptureMetadata).durationMs! / 1000).toFixed(1)}s</div>}
-                    </div>
-                  }>
-                    {isVideoRec(c) ? videoThumb(c, 80, 80) : (
-                      <Image src={getUrl(c)} width={80} height={80}
-                        style={{ objectFit: 'cover', borderRadius: 4, border: `2px solid ${token.colorPrimary}` }}
-                        preview={{ src: getUrl(c) }} />
-                    )}
+                  <Tooltip title={<div style={{ fontSize: 11 }}>
+                    <div><ClockCircleOutlined /> {(c.meta as CaptureMetadata)?.timestamp ?? EM_DASH}</div>
+                    <div><UserOutlined /> {(c.meta as CaptureMetadata)?.userName ?? EM_DASH}</div>
+                    {(c.meta as CaptureMetadata)?.latitude != null && <div><EnvironmentOutlined /> {(c.meta as CaptureMetadata)!.latitude!.toFixed(4)}, {(c.meta as CaptureMetadata)!.longitude?.toFixed(4)}</div>}
+                    {(c.meta as CaptureMetadata)?.durationMs != null && <div>Duration: {fmtDuration((c.meta as CaptureMetadata).durationMs!)}</div>}
+                  </div>}>
+                    {isVideoRec(c)
+                      ? <VideoThumb c={c} w={80} h={80} />
+                      : <Image src={getUrl(c)} width={80} height={80}
+                          style={{ objectFit: 'cover', borderRadius: 6, border: `2px solid ${token.colorPrimary}` }}
+                          preview={{ src: getUrl(c) }} />
+                    }
                   </Tooltip>
                 </Badge>
               ))}
@@ -655,60 +592,37 @@ const Inner: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── Camera / capture UI ── */}
+      {/* ── Camera & capture UI ── */}
       {!disabled && captures.length < maxCaptures && (
         <>
           {!cameraOn && !preview && (
-            <Button type="primary" icon={ModeIcon} onClick={startCamera}
-              block size="large" style={{ marginBottom: 8 }}>
+            <Button type="primary" icon={ModeIcon} onClick={startCamera} block size="large" style={{ marginBottom: 8 }}>
               Start {label} Capture
             </Button>
           )}
 
-          <div style={{
-            display: cameraOn && !preview ? 'block' : 'none',
-            position: 'relative', background: '#000', borderRadius: token.borderRadius,
-            overflow: 'hidden', marginBottom: 8,
-          }}>
-            <video ref={videoRef} autoPlay playsInline muted={!isVideoMode}
-              style={{ width: '100%', maxHeight: 400, display: 'block' }} />
-
+          <div style={{ display: cameraOn && !preview ? 'block' : 'none', position: 'relative', background: '#000', borderRadius: token.borderRadius, overflow: 'hidden', marginBottom: 8 }}>
+            <video ref={videoRef} autoPlay playsInline muted={!isVideoMode} style={{ width: '100%', maxHeight: 400, display: 'block' }} />
             {cameraOn && liveClock && (
-              <div style={{
-                position: 'absolute', bottom: 72, left: 8, background: 'rgba(0,0,0,0.6)',
-                color: '#FADB14', padding: '3px 8px', borderRadius: 4, fontSize: 12,
-                fontFamily: 'monospace', pointerEvents: 'none',
-              }}>
+              <div style={{ position: 'absolute', bottom: 72, left: 8, background: 'rgba(0,0,0,0.6)', color: '#FADB14', padding: '3px 8px', borderRadius: 4, fontSize: 12, fontFamily: 'monospace', pointerEvents: 'none' }}>
                 <ClockCircleOutlined style={{ marginRight: 4 }} />{liveClock}
               </div>
             )}
-
             {recording && (
-              <div style={{
-                position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 6,
-                background: 'rgba(200,0,0,0.9)', color: '#fff', padding: '4px 10px', borderRadius: 4,
-                fontSize: 12, fontWeight: 600,
-              }}>
-                <span style={{ width: 8, height: 8, background: '#fff', borderRadius: '50%', display: 'inline-block' }} />
-                REC{elapsed > 0 ? ` ${elapsed}s` : ''}
+              <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(220,20,20,0.9)', color: '#fff', padding: '4px 10px', borderRadius: 4, fontSize: 12, fontWeight: 600 }}>
+                <span style={{ width: 8, height: 8, background: '#fff', borderRadius: '50%', display: 'inline-block', animation: 'pulse 1s infinite' }} />
+                REC {elapsed > 0 ? fmtDuration(elapsed * 1000) : ''}
               </div>
             )}
-
-            <div style={{
-              position: 'absolute', bottom: 0, left: 0, right: 0, padding: 12,
-              background: 'linear-gradient(transparent, rgba(0,0,0,0.72))',
-              display: 'flex', justifyContent: 'center', gap: 12, alignItems: 'center',
-            }}>
+            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: 12, background: 'linear-gradient(transparent, rgba(0,0,0,0.72))', display: 'flex', justifyContent: 'center', gap: 12, alignItems: 'center' }}>
               <Button shape="circle" size="large" icon={<SwapOutlined />} onClick={flipCamera} title="Flip" />
               {!isVideoMode ? (
                 <Button shape="circle" size="large" type="primary" icon={<CameraOutlined />}
-                  onClick={captureImage} loading={loading}
-                  style={{ width: 64, height: 64, fontSize: 24 }} title="Capture" />
+                  onClick={captureImage} loading={loading} style={{ width: 64, height: 64, fontSize: 24 }} title="Capture" />
               ) : !recording ? (
                 <Button shape="circle" size="large" icon={<PlayCircleOutlined />}
                   onClick={startRecording}
-                  style={{ width: 64, height: 64, fontSize: 24, background: token.colorError, borderColor: token.colorError, color: '#fff' }}
-                  title="Record" />
+                  style={{ width: 64, height: 64, fontSize: 24, background: '#dc3545', borderColor: '#dc3545', color: '#fff' }} title="Record" />
               ) : (
                 <Button shape="circle" size="large" type="primary" icon={<StopOutlined />}
                   onClick={stopRecording} style={{ width: 64, height: 64, fontSize: 24 }} title="Stop" />
@@ -717,59 +631,36 @@ const Inner: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* ── Preview after capture (before save) ── */}
+          {/* ── Preview (before save) ── */}
           {preview && (
             <div style={{ marginTop: 8, textAlign: 'center' }}>
               {isVideoRec(preview) ? (
-                <video controls playsInline
-                  style={{
-                    maxWidth: '100%', maxHeight: 360, display: 'block', margin: '0 auto',
-                    borderRadius: token.borderRadius, border: `2px solid ${token.colorSuccess}`, background: '#000',
-                  }}>
-                  <source src={preview.previewUrl} type={baseMime(preview) || 'video/webm'} />
-                  <source src={preview.previewUrl} />
-                </video>
+                /* Use src= directly — NOT <source>, which causes error bubbling in React */
+                <video
+                  src={preview.previewUrl}
+                  controls playsInline
+                  style={{ maxWidth: '100%', maxHeight: 360, display: 'block', margin: '0 auto', borderRadius: token.borderRadius, border: `2px solid ${token.colorSuccess}`, background: '#000' }}
+                />
               ) : (
                 <Image src={preview.previewUrl} preview={false}
-                  style={{ maxWidth: '100%', maxHeight: 360, borderRadius: token.borderRadius,
-                    border: `2px solid ${token.colorSuccess}` }} />
+                  style={{ maxWidth: '100%', maxHeight: 360, borderRadius: token.borderRadius, border: `2px solid ${token.colorSuccess}` }} />
               )}
-
-              <div style={{
-                marginTop: 8, padding: '8px 12px', background: token.colorBgLayout,
-                borderRadius: token.borderRadius, fontSize: 12, textAlign: 'left',
-              }}>
+              <div style={{ marginTop: 8, padding: '8px 12px', background: token.colorBgLayout, borderRadius: token.borderRadius, fontSize: 12, textAlign: 'left' }}>
                 <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                  <Text>
-                    <ClockCircleOutlined style={{ marginRight: 4, color: token.colorWarning }} />
-                    <Text strong>Captured: </Text>{(preview.meta as CaptureMetadata)?.timestamp}
-                  </Text>
-                  <Text>
-                    <UserOutlined style={{ marginRight: 4 }} />
-                    {(preview.meta as CaptureMetadata)?.userName} (ID: {(preview.meta as CaptureMetadata)?.userId})
-                  </Text>
+                  <Text><ClockCircleOutlined style={{ marginRight: 4, color: token.colorWarning }} /><Text strong>Captured: </Text>{(preview.meta as CaptureMetadata)?.timestamp}</Text>
+                  <Text><UserOutlined style={{ marginRight: 4 }} />{(preview.meta as CaptureMetadata)?.userName} (ID: {(preview.meta as CaptureMetadata)?.userId})</Text>
                   {(preview.meta as CaptureMetadata)?.latitude != null && (
-                    <Text>
-                      <EnvironmentOutlined style={{ marginRight: 4 }} />
-                      {(preview.meta as CaptureMetadata)!.latitude!.toFixed(5)}, {(preview.meta as CaptureMetadata)!.longitude?.toFixed(5)}
-                    </Text>
+                    <Text><EnvironmentOutlined style={{ marginRight: 4 }} />{(preview.meta as CaptureMetadata)!.latitude!.toFixed(5)}, {(preview.meta as CaptureMetadata)!.longitude?.toFixed(5)}</Text>
                   )}
-                  {(preview.meta as CaptureMetadata)?.durationMs != null && (
-                    <Text>Duration: {((preview.meta as CaptureMetadata).durationMs! / 1000).toFixed(1)}s</Text>
-                  )}
+                  {(preview.meta as CaptureMetadata)?.durationMs != null && <Text>Duration: {fmtDuration((preview.meta as CaptureMetadata).durationMs!)}</Text>}
                   {(preview.meta as CaptureMetadata)?.imageHash && (
-                    <Text copyable={{ text: (preview.meta as CaptureMetadata)!.imageHash! }}>
-                      SHA-256: {(preview.meta as CaptureMetadata)!.imageHash!.substring(0, 20)}...
-                    </Text>
+                    <Text copyable={{ text: (preview.meta as CaptureMetadata)!.imageHash! }}>SHA-256: {(preview.meta as CaptureMetadata)!.imageHash!.substring(0, 20)}…</Text>
                   )}
                 </Space>
               </div>
-
               <Space style={{ marginTop: 12 }}>
                 <Button icon={<ReloadOutlined />} onClick={retake}>Retake</Button>
-                <Button type="primary" icon={<CheckCircleOutlined />} onClick={acceptCapture} loading={loading}>
-                  Save {label}
-                </Button>
+                <Button type="primary" icon={<CheckCircleOutlined />} onClick={acceptCapture} loading={loading}>Save {label}</Button>
               </Space>
             </div>
           )}
@@ -777,21 +668,18 @@ const Inner: React.FC<Props> = ({
       )}
 
       {captures.length >= maxCaptures && !disabled && (
-        <Alert message={`Maximum ${maxCaptures} ${label.toLowerCase()} captures reached`}
-          type="success" showIcon style={{ marginTop: 8 }} />
+        <Alert message={`Maximum ${maxCaptures} ${label.toLowerCase()} captures reached`} type="success" showIcon style={{ marginTop: 8 }} />
       )}
 
       {captures.length === 0 && !cameraOn && !preview && (
         <Paragraph type="secondary" style={{ textAlign: 'center', marginTop: 16 }}>
-          {isVideoMode
-            ? <VideoCameraOutlined style={{ fontSize: 28, display: 'block', marginBottom: 4 }} />
-            : <CameraOutlined style={{ fontSize: 28, display: 'block', marginBottom: 4 }} />}
+          {isVideoMode ? <VideoCameraOutlined style={{ fontSize: 28, display: 'block', marginBottom: 4 }} /> : <CameraOutlined style={{ fontSize: 28, display: 'block', marginBottom: 4 }} />}
           No {label.toLowerCase()} captures yet
         </Paragraph>
       )}
 
       <canvas ref={canvasRef} style={{ display: 'none' }} />
-      {videoPlaybackModal}
+      {playbackModal}
     </div>
   );
 };
