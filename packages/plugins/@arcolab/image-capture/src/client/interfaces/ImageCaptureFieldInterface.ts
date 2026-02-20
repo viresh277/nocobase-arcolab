@@ -1,13 +1,7 @@
 import { ISchema } from '@formily/react';
 import { uid } from '@formily/shared';
-import { CollectionFieldInterface } from '@nocobase/client';
+import { CollectionFieldInterface, interfacesProperties } from '@nocobase/client';
 import { tval } from '../locale';
-
-interface FieldShape {
-  uiSchema?: {
-    'x-component-props'?: Record<string, unknown>;
-  };
-}
 
 export class ImageCaptureFieldInterface extends CollectionFieldInterface {
   name = 'imageCapture';
@@ -35,7 +29,7 @@ export class ImageCaptureFieldInterface extends CollectionFieldInterface {
 
   availableTypes = ['belongsToMany'];
 
-  schemaInitialize(schema: ISchema, { block, field }: { block: string; field: FieldShape }) {
+  schemaInitialize(schema: ISchema, { block, field }: { block: string; field: any }) {
     if (!schema['x-component-props']) {
       schema['x-component-props'] = {};
     }
@@ -50,7 +44,7 @@ export class ImageCaptureFieldInterface extends CollectionFieldInterface {
     schema['x-use-component-props'] = 'useImageCaptureFieldProps';
   }
 
-  initialize(values: Record<string, string>) {
+  initialize(values: any) {
     if (!values.through) values.through = `t_${uid()}`;
     if (!values.foreignKey) values.foreignKey = `f_${uid()}`;
     if (!values.otherKey) values.otherKey = `f_${uid()}`;
@@ -59,26 +53,7 @@ export class ImageCaptureFieldInterface extends CollectionFieldInterface {
   }
 
   properties = {
-    // Standard field display name and field name — inlined from NocoBase's internal defaultProps
-    // (defaultProps is NOT exported from @nocobase/client; this is the correct approach for plugins)
-    'uiSchema.title': {
-      type: 'string',
-      title: '{{t("Field display name")}}',
-      required: true,
-      'x-decorator': 'FormItem',
-      'x-component': 'Input',
-    },
-    name: {
-      type: 'string',
-      title: '{{t("Field name")}}',
-      required: true,
-      'x-disabled': '{{ !createOnly }}',
-      'x-decorator': 'FormItem',
-      'x-component': 'Input',
-      'x-validator': 'uid',
-      description:
-        "{{t('Randomly generated and can be modified. Support letters, numbers and underscores, must start with an letter.')}}",
-    },
+    ...interfacesProperties.defaultProps,
     'uiSchema.x-component-props.mode': {
       type: 'string',
       title: tval('Capture Mode'),

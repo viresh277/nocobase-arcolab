@@ -1,6 +1,6 @@
 {
   "name": "@arcolab/image-capture",
-  "version": "3.0.0",
+  "version": "2.0.1",
   "displayName": "Image Capture",
   "displayName.zh-CN": "图像采集",
   "description": "Camera capture field with automatic timestamp overlay for image and video",
