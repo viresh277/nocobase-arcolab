@@ -1,5 +1,4 @@
 import React, { useCallback, useState } from 'react';
-import { APIClient, useAPIClient } from '@nocobase/client';
 import { Image, Modal, Space, Tag, Tooltip, Typography, Empty, theme } from 'antd';
 import {
   ClockCircleOutlined, UserOutlined, EnvironmentOutlined,
@@ -15,6 +14,7 @@ interface CaptureRecord {
   previewUrl?: string;
   filename?: string;
   title?: string;
+  name?: string;
   mimeType?: string;
   mimetype?: string;
   extname?: string;
@@ -32,30 +32,44 @@ function getRawUrl(rec: CaptureRecord): string {
   return rec.url ?? rec.preview ?? rec.previewUrl ?? '';
 }
 
+/**
+ * Resolve a storage-relative URL to a full URL.
+ * Matches NocoBase core toItem() pattern: always use location.origin.
+ */
+function resolveUrl(raw: string): string {
+  if (!raw) return '';
+  if (/^(https?:|blob:|data:)/.test(raw)) return raw;
+  return `${window.location.origin}/${raw.replace(/^\//, '')}`;
+}
+
+/**
+ * Detect MIME type from the record. Checks direct mimetype fields first,
+ * then falls back to extension-based detection from extname / filename / url.
+ */
 function mimeOf(rec: CaptureRecord | null | undefined): string {
   const direct = rec?.mimeType ?? rec?.mimetype ?? '';
   if (direct) return direct;
   const hint = (rec?.extname ?? rec?.filename ?? rec?.url ?? '').toLowerCase();
-  if (/\.webm/.test(hint)) return 'video/webm';
-  if (/\.mp4/.test(hint)) return 'video/mp4';
-  if (/\.mov/.test(hint)) return 'video/quicktime';
-  if (/\.avi/.test(hint)) return 'video/x-msvideo';
-  if (/\.jpe?g/.test(hint)) return 'image/jpeg';
-  if (/\.png/.test(hint)) return 'image/png';
-  if (/\.gif/.test(hint)) return 'image/gif';
-  if (/\.webp/.test(hint)) return 'image/webp';
+  if (/\.webm/i.test(hint)) return 'video/webm';
+  if (/\.mp4/i.test(hint)) return 'video/mp4';
+  if (/\.mov/i.test(hint)) return 'video/quicktime';
+  if (/\.avi/i.test(hint)) return 'video/x-msvideo';
+  if (/\.mkv/i.test(hint)) return 'video/x-matroska';
+  if (/\.ogg/i.test(hint)) return 'video/ogg';
+  if (/\.jpe?g/i.test(hint)) return 'image/jpeg';
+  if (/\.png/i.test(hint)) return 'image/png';
+  if (/\.gif/i.test(hint)) return 'image/gif';
+  if (/\.webp/i.test(hint)) return 'image/webp';
   return '';
+}
+
+/** Strip codec params so the type attr is clean: "video/webm;codecs=vp9" → "video/webm" */
+function baseMime(mime: string): string {
+  return mime.split(';')[0].trim() || '';
 }
 
 function isVideo(rec: CaptureRecord | null | undefined): boolean {
   return mimeOf(rec).startsWith('video/');
-}
-
-function resolveUrl(raw: string, client: APIClient): string {
-  if (!raw || /^(https?:|blob:|data:)/.test(raw)) return raw;
-  const base = String(client.axios.defaults.baseURL ?? window.location.origin)
-    .replace(/\/api\/?$/, '').replace(/\/$/, '');
-  return base + (raw.startsWith('/') ? raw : `/${raw}`);
 }
 
 // Exported so ImageCaptureField's declaration build can name this type (TS4023)
@@ -66,11 +80,11 @@ export interface Props {
 
 export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
   const { token } = theme.useToken();
-  const api = useAPIClient();
   const [modal, setModal] = useState<CaptureRecord | null>(null);
+  const [videoError, setVideoError] = useState(false);
 
   const getUrl = useCallback(
-    (rec: CaptureRecord) => resolveUrl(getRawUrl(rec), api), [api],
+    (rec: CaptureRecord) => resolveUrl(getRawUrl(rec)), [],
   );
 
   const captures = value ?? [];
@@ -82,14 +96,25 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
   }
 
   const modalUrl = modal ? getUrl(modal) : '';
+  const modalMime = modal ? baseMime(mimeOf(modal)) : '';
   const modalTs = modal?.meta?.timestamp ?? '';
   const modalDur = modal?.meta?.durationMs != null
     ? `${(modal.meta.durationMs / 1000).toFixed(1)}s` : null;
 
+  const openVideoModal = (c: CaptureRecord) => {
+    setVideoError(false);
+    setModal(c);
+  };
+
+  const closeModal = () => {
+    setModal(null);
+    setVideoError(false);
+  };
+
   const videoModal = (
     <Modal
-      open={!!modal && isVideo(modal)}
-      onCancel={() => setModal(null)}
+      open={!!modal}
+      onCancel={closeModal}
       footer={null}
       width={720}
       title={
@@ -103,10 +128,20 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
       destroyOnClose
       centered
     >
-      {modal && (
+      {modal && !videoError && (
         <>
-          <video src={modalUrl} controls autoPlay playsInline
-            style={{ width: '100%', maxHeight: 500, display: 'block', borderRadius: token.borderRadius, background: '#000' }} />
+          <video
+            key={modalUrl}
+            controls
+            autoPlay
+            playsInline
+            onError={() => setVideoError(true)}
+            style={{ width: '100%', maxHeight: 500, display: 'block', borderRadius: token.borderRadius, background: '#000' }}
+          >
+            <source src={modalUrl} type={modalMime || 'video/webm'} />
+            <source src={modalUrl} />
+            Your browser does not support video playback.
+          </video>
           <div style={{ marginTop: 10, fontSize: 12, color: token.colorTextSecondary }}>
             {modal.meta?.userName && <div><UserOutlined style={{ marginRight: 4 }} />{modal.meta.userName}</div>}
             {modal.meta?.latitude != null && (
@@ -114,6 +149,17 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
             )}
           </div>
         </>
+      )}
+      {modal && videoError && (
+        <div style={{ textAlign: 'center', padding: 40 }}>
+          <VideoCameraOutlined style={{ fontSize: 48, color: token.colorTextDisabled }} />
+          <div style={{ marginTop: 12, color: token.colorTextSecondary }}>
+            Unable to play this video in the browser.
+          </div>
+          <a href={modalUrl} download style={{ marginTop: 8, display: 'inline-block' }}>
+            Download video file
+          </a>
+        </div>
       )}
     </Modal>
   );
@@ -126,8 +172,8 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
             const url = getUrl(c);
             return isVideo(c) ? (
               <Tooltip key={i} title={c.meta?.timestamp ?? c.filename ?? 'Video'}>
-                <div onClick={() => setModal(c)} style={{
-                  width: 24, height: 24, background: token.colorFillSecondary, borderRadius: 2,
+                <div onClick={() => openVideoModal(c)} style={{
+                  width: 24, height: 24, background: '#1a1a2e', borderRadius: 2,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
                   border: `1px solid ${token.colorBorder}`,
                 }}>
@@ -165,16 +211,31 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
                   overflow: 'hidden', width: 200, background: token.colorBgLayout,
                 }}>
                   {vid ? (
-                    <div style={{ position: 'relative', width: 200, height: 150, cursor: 'pointer' }}
-                      onClick={() => setModal(c)}>
-                      <video src={url} preload="metadata" muted playsInline
-                        style={{ width: 200, height: 150, objectFit: 'cover', display: 'block', background: '#000' }} />
+                    /* Icon-based video thumbnail — always visible */
+                    <div
+                      style={{
+                        position: 'relative', width: 200, height: 150, cursor: 'pointer',
+                        background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}
+                      onClick={() => openVideoModal(c)}
+                    >
+                      <VideoCameraOutlined style={{ fontSize: 48, color: 'rgba(255,255,255,0.25)' }} />
                       <div style={{
                         position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
-                        justifyContent: 'center', background: 'rgba(0,0,0,0.25)',
+                        justifyContent: 'center',
                       }}>
-                        <PlayCircleOutlined style={{ fontSize: 36, color: 'rgba(255,255,255,0.9)' }} />
+                        <PlayCircleOutlined style={{ fontSize: 42, color: 'rgba(255,255,255,0.9)' }} />
                       </div>
+                      {c.meta?.durationMs != null && (
+                        <div style={{
+                          position: 'absolute', bottom: 6, right: 8,
+                          fontSize: 11, color: '#fff', background: 'rgba(0,0,0,0.65)',
+                          padding: '1px 6px', borderRadius: 3,
+                        }}>
+                          {(c.meta.durationMs / 1000).toFixed(1)}s
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <Image src={url} width={200} height={150}

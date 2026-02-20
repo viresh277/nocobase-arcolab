@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { connect, mapReadPretty } from '@formily/react';
-import { APIClient, useAPIClient } from '@nocobase/client';
+import { useAPIClient } from '@nocobase/client';
 import {
   Alert, Badge, Button, Image, Modal, Space, Tag, Tooltip, Typography, theme,
 } from 'antd';
@@ -14,7 +14,7 @@ import { ImageCaptureReadPretty } from './ImageCaptureReadPretty';
 
 const { Text, Paragraph } = Typography;
 
-// Types
+// ── Types ──────────────────────────────────────────────────────────
 
 export type CaptureMode = 'image' | 'video';
 
@@ -38,19 +38,14 @@ export interface CaptureRecord {
   filename?: string;
   title?: string;
   extname?: string;
+  size?: number;
+  path?: string;
   blob?: Blob;
   previewUrl?: string;
   preview?: string;
   mimeType?: string;
   mimetype?: string;
   meta?: CaptureMetadata;
-}
-
-interface AttachmentResponse {
-  id: number;
-  url: string;
-  filename: string;
-  title: string;
 }
 
 interface CanvasWithCaptureStream extends HTMLCanvasElement {
@@ -63,10 +58,20 @@ interface UserInfo {
   username?: string;
 }
 
-// Helpers
+// ── Helpers ────────────────────────────────────────────────────────
 
 function getRawUrl(rec: CaptureRecord): string {
   return rec.url ?? rec.previewUrl ?? rec.preview ?? '';
+}
+
+/**
+ * Resolve a storage-relative URL to a full URL.
+ * Matches NocoBase core toItem() pattern – always use location.origin.
+ */
+function resolveUrl(raw: string): string {
+  if (!raw) return '';
+  if (/^(https?:|blob:|data:)/.test(raw)) return raw;
+  return `${window.location.origin}/${raw.replace(/^\//, '')}`;
 }
 
 /**
@@ -77,15 +82,22 @@ function mimeOf(rec: CaptureRecord | null | undefined): string {
   const direct = rec?.mimeType ?? rec?.mimetype ?? '';
   if (direct) return direct;
   const hint = (rec?.extname ?? rec?.filename ?? rec?.url ?? '').toLowerCase();
-  if (/\.webm/.test(hint)) return 'video/webm';
-  if (/\.mp4/.test(hint)) return 'video/mp4';
-  if (/\.mov/.test(hint)) return 'video/quicktime';
-  if (/\.avi/.test(hint)) return 'video/x-msvideo';
-  if (/\.jpe?g/.test(hint)) return 'image/jpeg';
-  if (/\.png/.test(hint)) return 'image/png';
-  if (/\.gif/.test(hint)) return 'image/gif';
-  if (/\.webp/.test(hint)) return 'image/webp';
+  if (/\.webm/i.test(hint)) return 'video/webm';
+  if (/\.mp4/i.test(hint)) return 'video/mp4';
+  if (/\.mov/i.test(hint)) return 'video/quicktime';
+  if (/\.avi/i.test(hint)) return 'video/x-msvideo';
+  if (/\.mkv/i.test(hint)) return 'video/x-matroska';
+  if (/\.ogg/i.test(hint)) return 'video/ogg';
+  if (/\.jpe?g/i.test(hint)) return 'image/jpeg';
+  if (/\.png/i.test(hint)) return 'image/png';
+  if (/\.gif/i.test(hint)) return 'image/gif';
+  if (/\.webp/i.test(hint)) return 'image/webp';
   return '';
+}
+
+/** Strip codec params: "video/webm;codecs=vp9" → "video/webm" */
+function baseMime(m: string): string {
+  return m.split(';')[0].trim();
 }
 
 function isVideoRec(rec: CaptureRecord | null | undefined): boolean {
@@ -131,13 +143,6 @@ function getSupportedVideoMime(): string {
   return 'video/mp4';
 }
 
-function resolveUrl(raw: string, client: APIClient): string {
-  if (!raw || /^(https?:|blob:|data:)/.test(raw)) return raw;
-  const base = String(client.axios.defaults.baseURL ?? window.location.origin)
-    .replace(/\/api\/?$/, '').replace(/\/$/, '');
-  return base + (raw.startsWith('/') ? raw : `/${raw}`);
-}
-
 function buildMeta(
   mode: CaptureMode, ts: string, idx: number,
   user: UserInfo | undefined, geo: GeolocationPosition | null,
@@ -155,10 +160,9 @@ function buildMeta(
   };
 }
 
-// em dash constant
-const EM_DASH = String.fromCharCode(8212);
+const EM_DASH = '\u2014';
 
-// Props
+// ── Props ──────────────────────────────────────────────────────────
 
 interface Props {
   value?: CaptureRecord[];
@@ -167,26 +171,24 @@ interface Props {
   mode?: CaptureMode;
   maxCaptures?: number;
   enableGeolocation?: boolean;
-  apiClient?: APIClient;
   currentUser?: UserInfo;
   size?: 'small' | 'default';
 }
 
-// Component
+// ── Component ──────────────────────────────────────────────────────
 
 const Inner: React.FC<Props> = ({
   value, onChange, disabled = false, mode = 'image',
   maxCaptures = 5, enableGeolocation = true,
-  apiClient: apiClientProp, currentUser, size,
+  currentUser, size,
 }) => {
   const { token } = theme.useToken();
-  const apiHook = useAPIClient();
-  const api: APIClient = apiClientProp ?? apiHook;
+  const api = useAPIClient();
   const getUrl = useCallback(
-    (rec: CaptureRecord) => resolveUrl(getRawUrl(rec), api), [api],
+    (rec: CaptureRecord) => resolveUrl(getRawUrl(rec)), [],
   );
 
-  // Refs
+  // ── Refs ──
   const videoRef       = useRef<HTMLVideoElement>(null);
   const canvasRef      = useRef<HTMLCanvasElement>(null);
   const streamRef      = useRef<MediaStream | null>(null);
@@ -204,20 +206,36 @@ const Inner: React.FC<Props> = ({
   useEffect(() => { onChangeRef.current = onChange; });
   useEffect(() => { userRef.current = currentUser; });
 
-  // State
-  const [captures, setCaptures]          = useState<CaptureRecord[]>(value ?? []);
-  const [cameraOn, setCameraOn]          = useState(false);
-  const [preview, setPreview]            = useState<CaptureRecord | null>(null);
-  const [loading, setLoading]            = useState(false);
-  const [facing, setFacing]              = useState<'user' | 'environment'>('environment');
-  const [error, setError]                = useState<string | null>(null);
-  const [recording, setRecording]        = useState(false);
-  const [liveClock, setLiveClock]        = useState('');
-  const [elapsed, setElapsed]            = useState(0);
+  // ── State ──
+  const [captures, setCaptures]   = useState<CaptureRecord[]>(value ?? []);
+  const [cameraOn, setCameraOn]   = useState(false);
+  const [preview, setPreview]     = useState<CaptureRecord | null>(null);
+  const [loading, setLoading]     = useState(false);
+  const [facing, setFacing]       = useState<'user' | 'environment'>('environment');
+  const [error, setError]         = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [liveClock, setLiveClock] = useState('');
+  const [elapsed, setElapsed]     = useState(0);
 
+  // Keep ref in sync so callbacks always see latest captures
   useEffect(() => { capturesRef.current = captures; }, [captures]);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
-  useEffect(() => { setCaptures(value ?? []); }, [value]);
+
+  // Sync external value changes (e.g. from DB reload) into local state.
+  // We skip the sync if capturesRef already matches (avoids resetting after our own onChange).
+  useEffect(() => {
+    const incoming = value ?? [];
+    // Only overwrite local state if the incoming value is genuinely different.
+    // Compare by length + first/last id as a cheap heuristic.
+    const cur = capturesRef.current;
+    if (
+      incoming.length !== cur.length ||
+      incoming[0]?.id !== cur[0]?.id ||
+      incoming[incoming.length - 1]?.id !== cur[cur.length - 1]?.id
+    ) {
+      setCaptures(incoming);
+    }
+  }, [value]);
 
   useEffect(() => {
     if (!enableGeolocation || !navigator.geolocation) return;
@@ -245,7 +263,7 @@ const Inner: React.FC<Props> = ({
     return () => clearInterval(id);
   }, [recording]);
 
-  // Camera lifecycle
+  // ── Camera lifecycle ──
 
   const stopCamera = useCallback(() => {
     if (animRef.current) { cancelAnimationFrame(animRef.current); animRef.current = 0; }
@@ -286,7 +304,7 @@ const Inner: React.FC<Props> = ({
     setFacing((f) => (f === 'user' ? 'environment' : 'user'));
   }, [stopCamera]);
 
-  // Image capture
+  // ── Image capture ──
 
   const captureImage = useCallback(async () => {
     const cv = canvasRef.current;
@@ -309,6 +327,7 @@ const Inner: React.FC<Props> = ({
       setPreview({
         blob, previewUrl: URL.createObjectURL(blob),
         filename: `capture_${Date.now()}_${idx}.jpg`,
+        extname: '.jpg',
         mimeType: 'image/jpeg', mimetype: 'image/jpeg',
         meta: buildMeta('image', ts, idx, userRef.current, geoRef.current, { imageHash: hash }),
       });
@@ -319,7 +338,7 @@ const Inner: React.FC<Props> = ({
     }
   }, [maxCaptures]);
 
-  // Video recording
+  // ── Video recording ──
 
   const startRecording = useCallback(() => {
     const stream = streamRef.current;
@@ -362,6 +381,7 @@ const Inner: React.FC<Props> = ({
       setPreview({
         blob, previewUrl: URL.createObjectURL(blob),
         filename: `video_${Date.now()}_${idx}.${ext}`,
+        extname: `.${ext}`,
         mimeType: actual, mimetype: actual,
         meta: buildMeta('video', recTsRef.current, idx, userRef.current, geoRef.current, { durationMs: dur }),
       });
@@ -381,46 +401,59 @@ const Inner: React.FC<Props> = ({
     if (rec && rec.state !== 'inactive') try { rec.stop(); } catch { /* ok */ }
   }, []);
 
-  // Upload & save
+  // ── Upload & save ──
 
   const acceptCapture = useCallback(async () => {
     const p = preview;
     if (!p?.blob) return;
     setLoading(true);
     try {
+      // Upload using NocoBase's exact pattern (api.axios.post with FormData)
       const fd = new FormData();
       fd.append('file', p.blob, p.filename ?? `capture_${Date.now()}.bin`);
-      const res = await api.request<{ data: AttachmentResponse }>({
-        url: 'attachments:create', method: 'post', data: fd,
-      });
-      const att = res?.data?.data;
-      if (!att?.url) { setError('Upload failed: no URL returned.'); return; }
+      const { data: responseBody } = await api.axios.post('attachments:create', fd);
+      const att = responseBody?.data;
+      if (!att?.id) {
+        setError('Upload failed: server did not return an attachment record.');
+        return;
+      }
+
+      // Resolve URL using NocoBase toItem() pattern
+      const rawUrl = att.url ?? '';
+      const resolvedUrl = rawUrl.startsWith('http') ? rawUrl : `${location.origin}/${rawUrl.replace(/^\//, '')}`;
+
+      // Build record — spread ALL server fields so the shape matches NocoBase attachments exactly
       const rec: CaptureRecord = {
-        id: att.id, url: att.url, filename: att.filename, title: att.title,
-        mimeType: p.mimeType, mimetype: p.mimeType, meta: p.meta,
+        ...att,            // id, filename, title, extname, mimetype, size, path, url, etc.
+        url: resolvedUrl,  // override with fully resolved URL
+        mimeType: att.mimetype ?? p.mimeType,
+        mimetype: att.mimetype ?? p.mimetype,
+        meta: p.meta,
       };
-      void api.request({
-        url: 'imageCaptureAudit:create', method: 'post',
-        data: {
-          attachmentId: att.id, capturedAt: p.meta?.timestamp,
-          capturedById: p.meta?.userId, capturedByName: p.meta?.userName,
-          latitude: p.meta?.latitude, longitude: p.meta?.longitude,
-          accuracy: p.meta?.accuracy, deviceInfo: p.meta?.deviceInfo,
-          captureIndex: p.meta?.captureIndex, imageHash: p.meta?.imageHash,
-          action: p.meta?.mode === 'video' ? 'VIDEO_CAPTURE' : 'IMAGE_CAPTURE',
-          metadata: p.meta,
-        },
+
+      // Fire-and-forget audit log
+      api.axios.post('imageCaptureAudit:create', {
+        attachmentId: att.id, capturedAt: p.meta?.timestamp,
+        capturedById: p.meta?.userId, capturedByName: p.meta?.userName,
+        latitude: p.meta?.latitude, longitude: p.meta?.longitude,
+        accuracy: p.meta?.accuracy, deviceInfo: p.meta?.deviceInfo,
+        captureIndex: p.meta?.captureIndex, imageHash: p.meta?.imageHash,
+        action: p.meta?.mode === 'video' ? 'VIDEO_CAPTURE' : 'IMAGE_CAPTURE',
+        metadata: p.meta,
       }).catch(() => {});
+
       if (!mountedRef.current) return;
-      const currentLen = capturesRef.current.length;
-      setCaptures((prev) => {
-        const next = [...prev, rec];
-        onChangeRef.current?.(next);
-        return next;
-      });
+
+      // Update state — IMPORTANT: update ref, setState, and onChange SEPARATELY
+      // (no side effects inside setState callbacks)
+      const next = [...capturesRef.current, rec];
+      capturesRef.current = next;
+      setCaptures(next);
+      onChangeRef.current?.(next);
+
       if (p.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(p.previewUrl);
       setPreview(null);
-      if (currentLen + 1 >= maxCaptures) stopCamera();
+      if (next.length >= maxCaptures) stopCamera();
     } catch (err: unknown) {
       if (mountedRef.current) setError(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -438,21 +471,22 @@ const Inner: React.FC<Props> = ({
     Modal.confirm({
       title: 'Remove capture',
       content: 'This capture will be removed. The audit record is preserved.',
-      onOk: () => setCaptures((prev) => {
-        const next = prev.filter((_, j) => j !== i);
+      onOk: () => {
+        const next = capturesRef.current.filter((_, j) => j !== i);
+        capturesRef.current = next;
+        setCaptures(next);
         onChangeRef.current?.(next);
-        return next;
-      }),
+      },
     });
   }, [disabled]);
 
-  // Render
+  // ── Render ──
 
   const isVideoMode = mode === 'video';
   const ModeIcon = isVideoMode ? <VideoCameraOutlined /> : <CameraOutlined />;
   const label = isVideoMode ? 'Video' : 'Image';
 
-  // Small view (table / kanban cell)
+  // ── Small view (table / kanban cell) ──
   if (size === 'small') {
     return (
       <Space size={4}>
@@ -460,10 +494,11 @@ const Inner: React.FC<Props> = ({
           isVideoRec(c) ? (
             <Tooltip key={i} title={c.meta?.timestamp ?? c.filename ?? 'Video'}>
               <div style={{
-                width: 24, height: 24, background: token.colorFillSecondary, borderRadius: 2,
+                width: 24, height: 24, background: '#1a1a2e', borderRadius: 2,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                border: `1px solid ${token.colorBorder}`,
               }}>
-                <VideoCameraOutlined style={{ fontSize: 12, color: token.colorPrimary }} />
+                <VideoCameraOutlined style={{ fontSize: 11, color: token.colorPrimary }} />
               </div>
             </Tooltip>
           ) : (
@@ -477,7 +512,7 @@ const Inner: React.FC<Props> = ({
     );
   }
 
-  // Full form view
+  // ── Full form view ──
   return (
     <div style={{
       border: `1px solid ${token.colorBorder}`, borderRadius: token.borderRadius,
@@ -514,17 +549,29 @@ const Inner: React.FC<Props> = ({
                     </div>
                   }>
                     {isVideoRec(c) ? (
-                      <div style={{ position: 'relative', width: 80, height: 80 }}>
-                        <video src={getUrl(c)} preload="metadata" muted playsInline
-                          style={{
-                            width: 80, height: 80, objectFit: 'cover', borderRadius: 4,
-                            border: `2px solid ${token.colorPrimary}`, cursor: 'pointer', display: 'block',
-                          }}
-                          onClick={(e) => { const v = e.currentTarget; if (v.paused) void v.play(); else v.pause(); }} />
+                      /* Icon-based video thumbnail — reliable, always visible */
+                      <div style={{
+                        position: 'relative', width: 80, height: 80,
+                        background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+                        borderRadius: 4, border: `2px solid ${token.colorPrimary}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        cursor: 'pointer', overflow: 'hidden',
+                      }}>
+                        <VideoCameraOutlined style={{ fontSize: 28, color: 'rgba(255,255,255,0.5)' }} />
                         <PlayCircleOutlined style={{
-                          position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
-                          fontSize: 22, color: 'rgba(255,255,255,0.85)', pointerEvents: 'none',
+                          position: 'absolute', top: '50%', left: '50%',
+                          transform: 'translate(-50%,-50%)',
+                          fontSize: 22, color: 'rgba(255,255,255,0.9)',
                         }} />
+                        {c.meta?.durationMs != null && (
+                          <div style={{
+                            position: 'absolute', bottom: 2, right: 4,
+                            fontSize: 9, color: '#fff', background: 'rgba(0,0,0,0.6)',
+                            padding: '0 3px', borderRadius: 2,
+                          }}>
+                            {(c.meta.durationMs / 1000).toFixed(0)}s
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <Image src={getUrl(c)} width={80} height={80}
@@ -603,9 +650,12 @@ const Inner: React.FC<Props> = ({
           {preview && (
             <div style={{ marginTop: 8, textAlign: 'center' }}>
               {isVideoRec(preview) ? (
-                <video src={preview.previewUrl} controls playsInline
+                <video controls playsInline
                   style={{ maxWidth: '100%', maxHeight: 360, display: 'block', margin: '0 auto',
-                    borderRadius: token.borderRadius, border: `2px solid ${token.colorSuccess}`, background: '#000' }} />
+                    borderRadius: token.borderRadius, border: `2px solid ${token.colorSuccess}`, background: '#000' }}>
+                  <source src={preview.previewUrl} type={baseMime(mimeOf(preview)) || 'video/webm'} />
+                  <source src={preview.previewUrl} />
+                </video>
               ) : (
                 <Image src={preview.previewUrl} preview={false}
                   style={{ maxWidth: '100%', maxHeight: 360, borderRadius: token.borderRadius,
