@@ -1,0 +1,28 @@
+{
+  "name": "@arcolab/image-capture",
+  "version": "3.0.0",
+  "displayName": "Image Capture",
+  "displayName.zh-CN": "图像采集",
+  "description": "Camera capture field with automatic timestamp overlay for image and video",
+  "license": "AGPL-3.0",
+  "main": "./dist/server/index.js",
+  "keywords": ["Collection fields"],
+  "peerDependencies": {
+    "@nocobase/client": "2.x",
+    "@nocobase/server": "2.x",
+    "@nocobase/database": "2.x",
+    "@nocobase/actions": "2.x",
+    "@nocobase/utils": "2.x",
+    "@nocobase/test": "2.x"
+  },
+  "devDependencies": {
+    "@formily/antd-v5": "1.x",
+    "@formily/core": "2.x",
+    "@formily/react": "2.x",
+    "@formily/shared": "2.x",
+    "antd": "5.x",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-i18next": "^11.15.1"
+  }
+}
