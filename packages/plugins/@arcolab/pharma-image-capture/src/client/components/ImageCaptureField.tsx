@@ -37,29 +37,31 @@ export interface CaptureRecord {
   title?: string;
   blob?: Blob;
   previewUrl?: string;
-  /** camelCase - set by us on upload */
+  /** camelCase — set by us on upload */
   mimeType?: string;
-  /** lowercase - returned by NocoBase DB on reload */
+  /** lowercase — returned by NocoBase DB on reload */
   mimetype?: string;
   meta?: CaptureMetadata;
 }
 
-/** Returns the raw stored URL (may be relative) from any attachment shape */
-function getRawUrl(record: any): string {
-  if (!record) return '';
-  return record.url || record.previewUrl || record.preview || '';
+function getRawUrl(record: CaptureRecord): string {
+  return record.url ?? record.previewUrl ?? (record as any).preview ?? '';
 }
 
-/** Handles both camelCase (our upload) and lowercase (NocoBase DB reload) */
-function mimeOf(record: any): string {
-  return record?.mimeType || record?.mimetype || '';
+function mimeOf(record: CaptureRecord | null | undefined): string {
+  if (!record) return '';
+  return record.mimeType ?? record.mimetype ?? '';
 }
 
 function getISTTimestamp(): string {
   return new Date().toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
     hour12: false,
   });
 }
@@ -72,10 +74,13 @@ async function computeSHA256(buffer: ArrayBuffer): Promise<string> {
 }
 
 function drawTimestampOnCtx(
-  ctx: CanvasRenderingContext2D, w: number, h: number, ts: string,
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  ts: string,
 ): void {
   const fs = Math.max(14, Math.floor(w * 0.022));
-  ctx.font = 'bold ' + fs + 'px monospace';
+  ctx.font = `bold ${fs}px monospace`;
   const tw = ctx.measureText(ts).width;
   const pad = 10;
   const x = w - tw - pad * 2;
@@ -86,91 +91,112 @@ function drawTimestampOnCtx(
   ctx.fillText(ts, x, y);
 }
 
+/** Picks the best supported MIME type for MediaRecorder */
+function getSupportedVideoMime(): string {
+  if (typeof MediaRecorder === 'undefined') return 'video/mp4';
+  if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) return 'video/webm;codecs=vp9';
+  if (MediaRecorder.isTypeSupported('video/webm')) return 'video/webm';
+  return 'video/mp4';
+}
+
 interface Props {
-  value?: any[];
-  onChange?: (v: any[]) => void;
+  value?: CaptureRecord[];
+  onChange?: (v: CaptureRecord[]) => void;
   disabled?: boolean;
   mode?: CaptureMode;
   maxCaptures?: number;
   enableGeolocation?: boolean;
-  action?: string;
+  /** Kept for API compatibility but resolved internally via useAPIClient hook */
   apiClient?: any;
-  currentUser?: any;
+  currentUser?: { id?: number; nickname?: string; username?: string };
   size?: 'small' | 'default';
 }
 
-const Inner: React.FC<Props> = (props) => {
-  const {
-    value = [],
-    onChange,
-    disabled = false,
-    mode = 'image',
-    maxCaptures = 5,
-    enableGeolocation = true,
-    apiClient,
-    currentUser,
-    size,
-  } = props;
-
+const Inner: React.FC<Props> = ({
+  value,
+  onChange,
+  disabled = false,
+  mode = 'image',
+  maxCaptures = 5,
+  enableGeolocation = true,
+  apiClient: apiClientProp,
+  currentUser,
+  size,
+}) => {
   const { token } = theme.useToken();
-  // Fallback: if apiClient prop is not provided, use the hook
   const apiHook = useAPIClient();
+  // Prefer prop (passed by Formily useComponentProps), fall back to hook
+  const apiClient = apiClientProp ?? apiHook;
 
   /**
-   * Converts a potentially-relative attachment URL to an absolute URL.
-   * NocoBase frontend runs on :13000, files are served from :13001 (or wherever
-   * the API server is). The apiClient axios baseURL is e.g.
-   * "http://localhost:13001/api/" — we strip "/api/" to get the file server root.
+   * Converts a potentially-relative attachment URL to absolute.
+   * NocoBase frontend (:13000) and API server (:13001) differ —
+   * strip "/api/" from axios.defaults.baseURL to get the file-server root.
    */
-  const resolveUrl = useCallback((record: any): string => {
-    const raw = getRawUrl(record);
-    if (!raw) return '';
-    // Already absolute or a blob/data URL — return as-is
-    if (
-      raw.startsWith('http://') ||
-      raw.startsWith('https://') ||
-      raw.startsWith('blob:') ||
-      raw.startsWith('data:')
-    ) {
-      return raw;
-    }
-    // Relative path — resolve against server base
-    const client = apiClient || apiHook;
-    const base = (
-      (client as any)?.axios?.defaults?.baseURL ||
-      window.location.origin
-    ).replace(/\/api\/?$/, '').replace(/\/$/, '');
-    return base + (raw.startsWith('/') ? raw : '/' + raw);
-  }, [apiClient, apiHook]);
+  const resolveUrl = useCallback(
+    (record: CaptureRecord): string => {
+      const raw = getRawUrl(record);
+      if (!raw) return '';
+      if (
+        raw.startsWith('http://') ||
+        raw.startsWith('https://') ||
+        raw.startsWith('blob:') ||
+        raw.startsWith('data:')
+      ) {
+        return raw;
+      }
+      const base = (
+        (apiClient as any)?.axios?.defaults?.baseURL ?? window.location.origin
+      )
+        .replace(/\/api\/?$/, '')
+        .replace(/\/$/, '');
+      return base + (raw.startsWith('/') ? raw : `/${raw}`);
+    },
+    [apiClient],
+  );
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const animFrameRef = useRef<number | null>(null);
+  // —— Refs ——
+  const videoRef       = useRef<HTMLVideoElement>(null);
+  const canvasRef      = useRef<HTMLCanvasElement>(null);
+  const streamRef      = useRef<MediaStream | null>(null);
+  const recorderRef    = useRef<MediaRecorder | null>(null);
+  const chunksRef      = useRef<Blob[]>([]);
+  const animFrameRef   = useRef<number | null>(null);
   const recordStartRef = useRef<number | null>(null);
-  const recordTsRef = useRef<string>('');
+  const recordTsRef    = useRef<string>('');
+  /**
+   * Stable mirror of captures state.
+   * Used inside recorder.onstop callback to avoid stale-closure bugs:
+   * captures.length at onstop time equals capturesRef.current.length,
+   * not the frozen value from when handleStartRecording was called.
+   */
+  const capturesRef = useRef<CaptureRecord[]>([]);
 
-  const [captures, setCaptures] = useState<CaptureRecord[]>(value || []);
-  const [cameraOn, setCameraOn] = useState(false);
-  const [preview, setPreview] = useState<CaptureRecord | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [facing, setFacing] = useState<'user' | 'environment'>('environment');
-  const [error, setError] = useState<string | null>(null);
-  const [geo, setGeo] = useState<GeolocationPosition | null>(null);
-  const [recording, setRecording] = useState(false);
+  // —— State ——
+  const [captures, setCaptures]           = useState<CaptureRecord[]>(value ?? []);
+  const [cameraOn, setCameraOn]           = useState(false);
+  const [preview, setPreview]             = useState<CaptureRecord | null>(null);
+  const [loading, setLoading]             = useState(false);
+  const [facing, setFacing]               = useState<'user' | 'environment'>('environment');
+  const [error, setError]                 = useState<string | null>(null);
+  const [geo, setGeo]                     = useState<GeolocationPosition | null>(null);
+  const [recording, setRecording]         = useState(false);
   const [liveTimestamp, setLiveTimestamp] = useState('');
-  const [elapsedSecs, setElapsedSecs] = useState(0);
+  const [elapsedSecs, setElapsedSecs]     = useState(0);
 
+  // Keep capturesRef in sync so async callbacks always read current length
+  useEffect(() => { capturesRef.current = captures; }, [captures]);
+
+  // Sync external value → internal state (controlled field)
   useEffect(() => {
-    if (value && JSON.stringify(value) !== JSON.stringify(captures)) setCaptures(value);
+    setCaptures(value ?? []);
   }, [value]);
 
   useEffect(() => {
     if (!enableGeolocation || !navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
-      (p) => setGeo(p), () => {},
+      (p) => setGeo(p),
+      () => {},
       { enableHighAccuracy: true, timeout: 10000 },
     );
   }, [enableGeolocation]);
@@ -183,40 +209,58 @@ const Inner: React.FC<Props> = (props) => {
     return () => clearInterval(id);
   }, [cameraOn]);
 
-  // Recording elapsed counter
+  // Recording elapsed-time counter
   useEffect(() => {
     if (!recording) { setElapsedSecs(0); return; }
     const id = setInterval(() => {
-      if (recordStartRef.current) setElapsedSecs(Math.floor((Date.now() - recordStartRef.current) / 1000));
+      if (recordStartRef.current != null) {
+        setElapsedSecs(Math.floor((Date.now() - recordStartRef.current) / 1000));
+      }
     }, 1000);
     return () => clearInterval(id);
   }, [recording]);
 
   const stopCamera = useCallback(() => {
-    if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null; }
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop();
-    if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+    if (animFrameRef.current != null) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (recorderRef.current?.state !== 'inactive') recorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setCameraOn(false);
     setRecording(false);
   }, []);
 
-  useEffect(() => () => { stopCamera(); }, [stopCamera]);
+  // Cleanup on unmount
+  useEffect(() => stopCamera, [stopCamera]);
 
   const startCamera = useCallback(async () => {
     setError(null);
     setPreview(null);
-    if (!navigator.mediaDevices?.getUserMedia) { setError('Camera not supported in this browser.'); return; }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Camera not supported in this browser.');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: mode === 'video',
       });
       streamRef.current = stream;
-      if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
       setCameraOn(true);
-    } catch (err: any) {
-      setError(err.name === 'NotAllowedError' ? 'Camera/microphone access denied.' : 'Camera error: ' + err.message);
+    } catch (err: unknown) {
+      const e = err as DOMException;
+      setError(
+        e.name === 'NotAllowedError'
+          ? 'Camera/microphone access denied.'
+          : `Camera error: ${e.message}`,
+      );
     }
   }, [facing, mode]);
 
@@ -225,56 +269,77 @@ const Inner: React.FC<Props> = (props) => {
     setFacing((p) => (p === 'user' ? 'environment' : 'user'));
   }, [stopCamera]);
 
-  // ── IMAGE CAPTURE: timestamp burned onto canvas pixels ──
+  // —— IMAGE CAPTURE: timestamp burned onto canvas pixels ——
   const handleImageCapture = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current || captures.length >= maxCaptures) return;
+    const cv = canvasRef.current;
+    const vd = videoRef.current;
+    if (!cv || !vd || captures.length >= maxCaptures) return;
+
+    const ctx = cv.getContext('2d');
+    if (!ctx) { setError('Canvas 2D context unavailable.'); return; }
+
     setLoading(true);
     try {
       const ts = getISTTimestamp();
-      const cv = canvasRef.current;
-      const ctx = cv.getContext('2d')!;
-      cv.width = videoRef.current.videoWidth;
-      cv.height = videoRef.current.videoHeight;
-      ctx.drawImage(videoRef.current, 0, 0);
+      cv.width  = vd.videoWidth;
+      cv.height = vd.videoHeight;
+      ctx.drawImage(vd, 0, 0);
       drawTimestampOnCtx(ctx, cv.width, cv.height, ts);
-      const blob: Blob = await new Promise((r) =>
-        cv.toBlob((b) => r(b || new Blob()), 'image/jpeg', 0.92),
+
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        cv.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('Canvas toBlob failed'))),
+          'image/jpeg',
+          0.92,
+        ),
       );
       const hash = await computeSHA256(await blob.arrayBuffer());
-      const idx = captures.length + 1;
+      const idx  = captures.length + 1;
+
       setPreview({
-        blob, previewUrl: URL.createObjectURL(blob),
-        filename: 'capture_' + Date.now() + '_' + idx + '.jpg',
-        mimeType: 'image/jpeg',
-        mimetype: 'image/jpeg',
+        blob,
+        previewUrl: URL.createObjectURL(blob),
+        filename:   `capture_${Date.now()}_${idx}.jpg`,
+        mimeType:   'image/jpeg',
+        mimetype:   'image/jpeg',
         meta: {
-          mode: 'image', timestamp: ts,
-          userId: currentUser?.id || 0,
-          userName: currentUser?.nickname || currentUser?.username || 'Unknown',
-          latitude: geo?.coords?.latitude ?? null,
-          longitude: geo?.coords?.longitude ?? null,
-          accuracy: geo?.coords?.accuracy ?? null,
-          deviceInfo: navigator.userAgent,
-          captureIndex: idx, imageHash: hash,
+          mode:         'image',
+          timestamp:    ts,
+          userId:       currentUser?.id       ?? 0,
+          userName:     currentUser?.nickname ?? currentUser?.username ?? 'Unknown',
+          latitude:     geo?.coords.latitude  ?? null,
+          longitude:    geo?.coords.longitude ?? null,
+          accuracy:     geo?.coords.accuracy  ?? null,
+          deviceInfo:   navigator.userAgent,
+          captureIndex: idx,
+          imageHash:    hash,
         },
       });
-    } finally { setLoading(false); }
-  }, [captures, maxCaptures, currentUser, geo]);
+    } finally {
+      setLoading(false);
+    }
+  }, [captures.length, maxCaptures, currentUser, geo]);
 
-  // ── VIDEO RECORDING: canvas overlay with live timestamp burn-in ──
+  // —— VIDEO RECORDING: canvas overlay with live timestamp burn-in ——
   const handleStartRecording = useCallback(() => {
-    if (!streamRef.current || !videoRef.current || recording) return;
-    chunksRef.current = [];
-    const ts = getISTTimestamp();
-    recordTsRef.current = ts;
-    recordStartRef.current = Date.now();
-    const video = videoRef.current;
-    const w = video.videoWidth || 1280;
-    const h = video.videoHeight || 720;
+    const stream = streamRef.current;
+    const vd     = videoRef.current;
+    if (!stream || !vd || recording) return;
 
-    const oc = document.createElement('canvas');
-    oc.width = w; oc.height = h;
-    const octx = oc.getContext('2d')!;
+    chunksRef.current      = [];
+    recordTsRef.current    = getISTTimestamp();
+    recordStartRef.current = Date.now();
+
+    const w = vd.videoWidth  || 1280;
+    const h = vd.videoHeight || 720;
+
+    // Off-screen canvas for per-frame timestamp burn-in
+    const oc   = document.createElement('canvas');
+    oc.width   = w;
+    oc.height  = h;
+    const octx = oc.getContext('2d');
+    if (!octx) { setError('Canvas 2D context unavailable.'); return; }
+
     const drawFrame = () => {
       if (!videoRef.current) return;
       octx.drawImage(videoRef.current, 0, 0, w, h);
@@ -283,110 +348,136 @@ const Inner: React.FC<Props> = (props) => {
     };
     drawFrame();
 
-    let recStream: MediaStream = streamRef.current;
+    // Use canvas stream (timestamp overlaid) when supported; else raw stream
+    let recStream: MediaStream = stream;
     if (typeof (oc as any).captureStream === 'function') {
       recStream = (oc as any).captureStream(30) as MediaStream;
-      streamRef.current.getAudioTracks().forEach((t) => recStream.addTrack(t));
+      stream.getAudioTracks().forEach((t) => recStream.addTrack(t));
     }
 
-    const mimeType =
-      typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-        ? 'video/webm;codecs=vp9'
-        : typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('video/webm')
-          ? 'video/webm'
-          : 'video/mp4';
-
+    const mimeType = getSupportedVideoMime();
     const recorder = new MediaRecorder(recStream, { mimeType });
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+
     recorder.onstop = () => {
-      if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null; }
-      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-      const blob = new Blob(chunksRef.current, { type: mimeType });
-      const durationMs = recordStartRef.current ? Date.now() - recordStartRef.current : 0;
-      const idx = captures.length + 1;
-      const blobUrl = URL.createObjectURL(blob);
+      if (animFrameRef.current != null) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+      const ext        = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      const blob       = new Blob(chunksRef.current, { type: mimeType });
+      const durationMs = recordStartRef.current != null
+        ? Date.now() - recordStartRef.current
+        : 0;
+      // Use capturesRef — not the stale captures closure — to get current length
+      const idx = capturesRef.current.length + 1;
+
       setPreview({
-        blob, previewUrl: blobUrl,
-        filename: 'video_' + Date.now() + '_' + idx + '.' + ext,
+        blob,
+        previewUrl: URL.createObjectURL(blob),
+        filename:   `video_${Date.now()}_${idx}.${ext}`,
         mimeType,
-        mimetype: mimeType,
+        mimetype:   mimeType,
         meta: {
-          mode: 'video', timestamp: recordTsRef.current,
-          userId: currentUser?.id || 0,
-          userName: currentUser?.nickname || currentUser?.username || 'Unknown',
-          latitude: geo?.coords?.latitude ?? null,
-          longitude: geo?.coords?.longitude ?? null,
-          accuracy: geo?.coords?.accuracy ?? null,
-          deviceInfo: navigator.userAgent,
-          captureIndex: idx, durationMs,
+          mode:         'video',
+          timestamp:    recordTsRef.current,
+          userId:       currentUser?.id       ?? 0,
+          userName:     currentUser?.nickname ?? currentUser?.username ?? 'Unknown',
+          latitude:     geo?.coords.latitude  ?? null,
+          longitude:    geo?.coords.longitude ?? null,
+          accuracy:     geo?.coords.accuracy  ?? null,
+          deviceInfo:   navigator.userAgent,
+          captureIndex: idx,
+          durationMs,
         },
       });
       setRecording(false);
     };
+
     recorder.start(1000);
     recorderRef.current = recorder;
     setRecording(true);
-  }, [recording, captures, currentUser, geo]);
+  }, [recording, currentUser, geo]);
 
   const handleStopRecording = useCallback(() => {
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop();
+    if (recorderRef.current?.state !== 'inactive') recorderRef.current?.stop();
   }, []);
 
-  // ── UPLOAD & SAVE ──
+  // —— UPLOAD & SAVE ——
   const handleAccept = useCallback(async () => {
     if (!preview?.blob) return;
+    const p = preview; // stable reference for the async scope
     setLoading(true);
     try {
       let rec: CaptureRecord;
+
       if (apiClient) {
         const fd = new FormData();
-        fd.append('file', preview.blob, preview.filename);
-        const res = await apiClient.request({ url: 'attachments:create', method: 'post', data: fd });
-        const att = res?.data?.data;
-        if (!att?.url) { setError('Upload failed: no URL returned from server.'); setLoading(false); return; }
-        // Store BOTH mimeType (camelCase) and mimetype (lowercase) so rendering
-        // works regardless of whether value comes from local state or DB reload.
+        fd.append('file', p.blob!, p.filename);
+        const res = await (apiClient as any).request({
+          url:    'attachments:create',
+          method: 'post',
+          data:   fd,
+        });
+        const att = res?.data?.data as
+          | { id: number; url: string; filename: string; title: string }
+          | undefined;
+        if (!att?.url) {
+          setError('Upload failed: no URL returned from server.');
+          return;
+        }
         rec = {
-          id: att.id,
-          url: att.url,
+          id:       att.id,
+          url:      att.url,
           filename: att.filename,
-          title: att.title,
-          mimeType: preview.mimeType,
-          mimetype: preview.mimeType,
-          meta: preview.meta,
-        } as any;
-        // Fire audit record (non-blocking)
-        apiClient.request({
-          url: 'imageCaptureAudit:create', method: 'post',
-          data: {
-            attachmentId: att.id,
-            capturedAt: preview.meta?.timestamp,
-            capturedById: preview.meta?.userId,
-            capturedByName: preview.meta?.userName,
-            latitude: preview.meta?.latitude,
-            longitude: preview.meta?.longitude,
-            accuracy: preview.meta?.accuracy,
-            deviceInfo: preview.meta?.deviceInfo,
-            captureIndex: preview.meta?.captureIndex,
-            imageHash: preview.meta?.imageHash,
-            action: preview.meta?.mode === 'video' ? 'VIDEO_CAPTURE' : 'IMAGE_CAPTURE',
-            metadata: preview.meta,
-          },
-        }).catch(() => { /* server auto-audit fallback */ });
+          title:    att.title,
+          mimeType: p.mimeType,
+          mimetype: p.mimeType,
+          meta:     p.meta,
+        };
+        // Fire-and-forget audit (server auto-audit is the fallback)
+        void (apiClient as any)
+          .request({
+            url:    'imageCaptureAudit:create',
+            method: 'post',
+            data: {
+              attachmentId:   att.id,
+              capturedAt:     p.meta?.timestamp,
+              capturedById:   p.meta?.userId,
+              capturedByName: p.meta?.userName,
+              latitude:       p.meta?.latitude,
+              longitude:      p.meta?.longitude,
+              accuracy:       p.meta?.accuracy,
+              deviceInfo:     p.meta?.deviceInfo,
+              captureIndex:   p.meta?.captureIndex,
+              imageHash:      p.meta?.imageHash,
+              action:         p.meta?.mode === 'video' ? 'VIDEO_CAPTURE' : 'IMAGE_CAPTURE',
+              metadata:       p.meta,
+            },
+          })
+          .catch(() => { /* server auto-audit handles this */ });
       } else {
-        // No apiClient (e.g. offline / test): store blob URL directly
-        rec = { ...preview };
+        // Offline / test: store without blob to avoid memory leak in state
+        const { blob: _blob, previewUrl: _previewUrl, ...rest } = p;
+        rec = rest;
       }
+
       const updated = [...captures, rec];
       setCaptures(updated);
       onChange?.(updated);
-      // Revoke old blob URL to free memory
-      if (preview.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(preview.previewUrl);
+
+      // Free blob URL memory
+      if (p.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(p.previewUrl);
       setPreview(null);
       if (updated.length >= maxCaptures) stopCamera();
-    } catch (err: any) {
-      setError('Upload failed: ' + err.message);
-    } finally { setLoading(false); }
+    } catch (err: unknown) {
+      setError(`Upload failed: ${(err as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
   }, [preview, apiClient, captures, maxCaptures, onChange, stopCamera]);
 
   const handleRetake = useCallback(() => {
@@ -394,31 +485,43 @@ const Inner: React.FC<Props> = (props) => {
     setPreview(null);
   }, [preview]);
 
-  const handleDelete = useCallback((i: number) => {
-    if (disabled) return;
-    Modal.confirm({
-      title: 'Remove capture',
-      content: 'Remove this capture? The audit record will be preserved.',
-      onOk: () => { const u = captures.filter((_, j) => j !== i); setCaptures(u); onChange?.(u); },
-    });
-  }, [captures, disabled, onChange]);
+  const handleDelete = useCallback(
+    (i: number) => {
+      if (disabled) return;
+      Modal.confirm({
+        title:   'Remove capture',
+        content: 'Remove this capture? The audit record will be preserved.',
+        onOk: () => {
+          const u = captures.filter((_, j) => j !== i);
+          setCaptures(u);
+          onChange?.(u);
+        },
+      });
+    },
+    [captures, disabled, onChange],
+  );
 
-  const isVideo = mode === 'video';
-  const ModeIcon = isVideo ? <VideoCameraOutlined /> : <CameraOutlined />;
+  const isVideo   = mode === 'video';
+  const ModeIcon  = isVideo ? <VideoCameraOutlined /> : <CameraOutlined />;
   const modeLabel = isVideo ? 'Video' : 'Image';
 
-  // ── SMALL (table cell) ──
+  // —— SMALL (table / kanban cell) ——
   if (size === 'small') {
     return (
       <Space size={4}>
         {captures.map((c, i) =>
           mimeOf(c).startsWith('video/') ? (
-            <Tooltip key={i} title={c.meta?.timestamp || c.filename || 'Video'}>
+            <Tooltip key={i} title={c.meta?.timestamp ?? c.filename ?? 'Video'}>
               <div
                 style={{
-                  width: 24, height: 24, background: token.colorFillSecondary,
-                  borderRadius: 2, display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', cursor: 'pointer',
+                  width:          24,
+                  height:         24,
+                  background:     token.colorFillSecondary,
+                  borderRadius:   2,
+                  display:        'flex',
+                  alignItems:     'center',
+                  justifyContent: 'center',
+                  cursor:         'pointer',
                 }}
               >
                 <VideoCameraOutlined style={{ fontSize: 12, color: token.colorPrimary }} />
@@ -428,36 +531,46 @@ const Inner: React.FC<Props> = (props) => {
             <Image
               key={i}
               src={resolveUrl(c)}
-              width={24} height={24}
+              width={24}
+              height={24}
               style={{ objectFit: 'cover', borderRadius: 2 }}
               preview={{ mask: false, src: resolveUrl(c) }}
             />
           ),
         )}
-        {captures.length === 0 && <Text type="secondary">\u2014</Text>}
+        {captures.length === 0 && <Text type="secondary">—</Text>}
       </Space>
     );
   }
 
-  // ── FULL FORM VIEW ──
+  // —— FULL FORM VIEW ——
   return (
-    <div style={{
-      border: '1px solid ' + token.colorBorder,
-      borderRadius: token.borderRadius,
-      padding: token.paddingSM,
-      background: token.colorBgContainer,
-    }}>
-
+    <div
+      style={{
+        border:       `1px solid ${token.colorBorder}`,
+        borderRadius: token.borderRadius,
+        padding:      token.paddingSM,
+        background:   token.colorBgContainer,
+      }}
+    >
       {/* Mode header */}
       <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
         <Tag icon={ModeIcon} color={isVideo ? 'purple' : 'blue'} style={{ margin: 0 }}>
           {modeLabel} Capture
         </Tag>
-        <Text type="secondary" style={{ fontSize: 12 }}>{captures.length}/{maxCaptures}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {captures.length}/{maxCaptures}
+        </Text>
       </div>
 
       {error && (
-        <Alert message={error} type="error" closable onClose={() => setError(null)} style={{ marginBottom: 10 }} />
+        <Alert
+          message={error}
+          type="error"
+          closable
+          onClose={() => setError(null)}
+          style={{ marginBottom: 10 }}
+        />
       )}
 
       {/* Saved capture thumbnails */}
@@ -472,8 +585,12 @@ const Inner: React.FC<Props> = (props) => {
                     !disabled ? (
                       <DeleteOutlined
                         style={{
-                          color: token.colorError, fontSize: 14, cursor: 'pointer',
-                          background: '#fff', borderRadius: '50%', padding: 2,
+                          color:        token.colorError,
+                          fontSize:     14,
+                          cursor:       'pointer',
+                          background:   '#fff',
+                          borderRadius: '50%',
+                          padding:      2,
                         }}
                         onClick={() => handleDelete(i)}
                       />
@@ -483,10 +600,13 @@ const Inner: React.FC<Props> = (props) => {
                   <Tooltip
                     title={
                       <div style={{ fontSize: 11 }}>
-                        <div><ClockCircleOutlined /> {c.meta?.timestamp || '\u2014'}</div>
-                        <div><UserOutlined /> {c.meta?.userName || '\u2014'}</div>
+                        <div><ClockCircleOutlined /> {c.meta?.timestamp ?? '—'}</div>
+                        <div><UserOutlined /> {c.meta?.userName ?? '—'}</div>
                         {c.meta?.latitude != null && (
-                          <div><EnvironmentOutlined /> {c.meta.latitude.toFixed(4)}, {c.meta.longitude?.toFixed(4)}</div>
+                          <div>
+                            <EnvironmentOutlined />{' '}
+                            {c.meta.latitude.toFixed(4)}, {c.meta.longitude?.toFixed(4)}
+                          </div>
                         )}
                         {c.meta?.durationMs != null && (
                           <div>Duration: {(c.meta.durationMs / 1000).toFixed(1)}s</div>
@@ -495,7 +615,7 @@ const Inner: React.FC<Props> = (props) => {
                     }
                   >
                     {mimeOf(c).startsWith('video/') ? (
-                      // Inline video thumbnail — click to play/pause
+                      // Inline video thumbnail — click to play / pause
                       <div style={{ position: 'relative', width: 80, height: 80 }}>
                         <video
                           src={resolveUrl(c)}
@@ -503,20 +623,28 @@ const Inner: React.FC<Props> = (props) => {
                           muted
                           playsInline
                           style={{
-                            width: 80, height: 80, objectFit: 'cover',
-                            borderRadius: 4, border: '2px solid ' + token.colorPrimary,
-                            cursor: 'pointer', display: 'block',
+                            width:        80,
+                            height:       80,
+                            objectFit:    'cover',
+                            borderRadius: 4,
+                            border:       `2px solid ${token.colorPrimary}`,
+                            cursor:       'pointer',
+                            display:      'block',
                           }}
                           onClick={(e) => {
                             const v = e.currentTarget;
-                            v.paused ? v.play() : v.pause();
+                            // play() returns a Promise — void to suppress floating-promise warning
+                            v.paused ? void v.play() : v.pause();
                           }}
                         />
                         <PlayCircleOutlined
                           style={{
-                            position: 'absolute', top: '50%', left: '50%',
+                            position:  'absolute',
+                            top:       '50%',
+                            left:      '50%',
                             transform: 'translate(-50%,-50%)',
-                            fontSize: 22, color: 'rgba(255,255,255,0.85)',
+                            fontSize:  22,
+                            color:     'rgba(255,255,255,0.85)',
                             pointerEvents: 'none',
                           }}
                         />
@@ -524,10 +652,12 @@ const Inner: React.FC<Props> = (props) => {
                     ) : (
                       <Image
                         src={resolveUrl(c)}
-                        width={80} height={80}
+                        width={80}
+                        height={80}
                         style={{
-                          objectFit: 'cover', borderRadius: 4,
-                          border: '2px solid ' + token.colorPrimary,
+                          objectFit:    'cover',
+                          borderRadius: 4,
+                          border:       `2px solid ${token.colorPrimary}`,
                         }}
                         preview={{ src: resolveUrl(c) }}
                       />
@@ -545,80 +675,148 @@ const Inner: React.FC<Props> = (props) => {
         <>
           {!cameraOn && !preview && (
             <Button
-              type="primary" icon={ModeIcon} onClick={startCamera}
-              block size="large" style={{ marginBottom: 8 }}
+              type="primary"
+              icon={ModeIcon}
+              onClick={startCamera}
+              block
+              size="large"
+              style={{ marginBottom: 8 }}
             >
               Start {modeLabel} Capture
             </Button>
           )}
 
           {/* Live camera viewfinder */}
-          <div style={{
-            display: cameraOn && !preview ? 'block' : 'none',
-            position: 'relative', background: '#000',
-            borderRadius: token.borderRadius, overflow: 'hidden', marginBottom: 8,
-          }}>
+          <div
+            style={{
+              display:      cameraOn && !preview ? 'block' : 'none',
+              position:     'relative',
+              background:   '#000',
+              borderRadius: token.borderRadius,
+              overflow:     'hidden',
+              marginBottom: 8,
+            }}
+          >
             <video
-              ref={videoRef} autoPlay playsInline muted={!isVideo}
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted={!isVideo}
               style={{ width: '100%', maxHeight: 400, display: 'block' }}
             />
 
             {/* Live IST timestamp overlay */}
             {cameraOn && liveTimestamp && (
-              <div style={{
-                position: 'absolute', bottom: 72, left: 8,
-                background: 'rgba(0,0,0,0.6)', color: '#FADB14',
-                padding: '3px 8px', borderRadius: 4, fontSize: 12,
-                fontFamily: 'monospace', pointerEvents: 'none', letterSpacing: 0.3,
-              }}>
+              <div
+                style={{
+                  position:      'absolute',
+                  bottom:        72,
+                  left:          8,
+                  background:    'rgba(0,0,0,0.6)',
+                  color:         '#FADB14',
+                  padding:       '3px 8px',
+                  borderRadius:  4,
+                  fontSize:      12,
+                  fontFamily:    'monospace',
+                  pointerEvents: 'none',
+                  letterSpacing: 0.3,
+                }}
+              >
                 <ClockCircleOutlined style={{ marginRight: 4 }} />{liveTimestamp}
               </div>
             )}
 
-            {/* REC indicator */}
+            {/* REC indicator with elapsed time */}
             {recording && (
-              <div style={{
-                position: 'absolute', top: 8, left: 8,
-                display: 'flex', alignItems: 'center', gap: 6,
-                background: 'rgba(200,0,0,0.9)', color: '#fff',
-                padding: '4px 10px', borderRadius: 4, fontSize: 12, fontWeight: 600,
-              }}>
-                <span style={{ width: 8, height: 8, background: '#fff', borderRadius: '50%', display: 'inline-block' }} />
-                REC {elapsedSecs > 0 && elapsedSecs + 's'}
+              <div
+                style={{
+                  position:   'absolute',
+                  top:        8,
+                  left:       8,
+                  display:    'flex',
+                  alignItems: 'center',
+                  gap:        6,
+                  background: 'rgba(200,0,0,0.9)',
+                  color:      '#fff',
+                  padding:    '4px 10px',
+                  borderRadius: 4,
+                  fontSize:   12,
+                  fontWeight: 600,
+                }}
+              >
+                <span
+                  style={{
+                    width:        8,
+                    height:       8,
+                    background:   '#fff',
+                    borderRadius: '50%',
+                    display:      'inline-block',
+                  }}
+                />
+                REC{elapsedSecs > 0 ? ` ${elapsedSecs}s` : ''}
               </div>
             )}
 
             {/* Action buttons */}
-            <div style={{
-              position: 'absolute', bottom: 0, left: 0, right: 0,
-              padding: 12,
-              background: 'linear-gradient(transparent, rgba(0,0,0,0.72))',
-              display: 'flex', justifyContent: 'center', gap: 12, alignItems: 'center',
-            }}>
-              <Button shape="circle" size="large" icon={<SwapOutlined />} onClick={switchCamera} title="Flip camera" />
+            <div
+              style={{
+                position:       'absolute',
+                bottom:         0,
+                left:           0,
+                right:          0,
+                padding:        12,
+                background:     'linear-gradient(transparent, rgba(0,0,0,0.72))',
+                display:        'flex',
+                justifyContent: 'center',
+                gap:            12,
+                alignItems:     'center',
+              }}
+            >
+              <Button
+                shape="circle" size="large"
+                icon={<SwapOutlined />}
+                onClick={switchCamera}
+                title="Flip camera"
+              />
               {!isVideo ? (
                 <Button
-                  shape="circle" size="large" type="primary" icon={<CameraOutlined />}
-                  onClick={handleImageCapture} loading={loading}
+                  shape="circle" size="large" type="primary"
+                  icon={<CameraOutlined />}
+                  onClick={handleImageCapture}
+                  loading={loading}
                   style={{ width: 64, height: 64, fontSize: 24 }}
                   title="Capture image"
                 />
               ) : !recording ? (
                 <Button
-                  shape="circle" size="large" icon={<PlayCircleOutlined />}
+                  shape="circle" size="large"
+                  icon={<PlayCircleOutlined />}
                   onClick={handleStartRecording}
-                  style={{ width: 64, height: 64, fontSize: 24, background: token.colorError, borderColor: token.colorError, color: '#fff' }}
+                  style={{
+                    width:       64,
+                    height:      64,
+                    fontSize:    24,
+                    background:  token.colorError,
+                    borderColor: token.colorError,
+                    color:       '#fff',
+                  }}
                   title="Start recording"
                 />
               ) : (
                 <Button
-                  shape="circle" size="large" type="primary" icon={<StopOutlined />}
+                  shape="circle" size="large" type="primary"
+                  icon={<StopOutlined />}
                   onClick={handleStopRecording}
                   style={{ width: 64, height: 64, fontSize: 24 }}
                   title="Stop recording"
                 />
               )}
-              <Button shape="circle" size="large" danger icon={<StopOutlined />} onClick={stopCamera} title="Close camera" />
+              <Button
+                shape="circle" size="large" danger
+                icon={<StopOutlined />}
+                onClick={stopCamera}
+                title="Close camera"
+              />
             </div>
           </div>
 
@@ -631,10 +829,13 @@ const Inner: React.FC<Props> = (props) => {
                   controls
                   playsInline
                   style={{
-                    maxWidth: '100%', maxHeight: 360, display: 'block', margin: '0 auto',
+                    maxWidth:     '100%',
+                    maxHeight:    360,
+                    display:      'block',
+                    margin:       '0 auto',
                     borderRadius: token.borderRadius,
-                    border: '2px solid ' + token.colorSuccess,
-                    background: '#000',
+                    border:       `2px solid ${token.colorSuccess}`,
+                    background:   '#000',
                   }}
                 />
               ) : (
@@ -642,40 +843,62 @@ const Inner: React.FC<Props> = (props) => {
                   src={preview.previewUrl}
                   preview={false}
                   style={{
-                    maxWidth: '100%', maxHeight: 360,
+                    maxWidth:     '100%',
+                    maxHeight:    360,
                     borderRadius: token.borderRadius,
-                    border: '2px solid ' + token.colorSuccess,
+                    border:       `2px solid ${token.colorSuccess}`,
                   }}
                 />
               )}
 
               {/* Capture metadata strip */}
-              <div style={{
-                marginTop: 8, padding: '8px 12px',
-                background: token.colorBgLayout,
-                borderRadius: token.borderRadius, fontSize: 12, textAlign: 'left',
-              }}>
+              <div
+                style={{
+                  marginTop:    8,
+                  padding:      '8px 12px',
+                  background:   token.colorBgLayout,
+                  borderRadius: token.borderRadius,
+                  fontSize:     12,
+                  textAlign:    'left',
+                }}
+              >
                 <Space direction="vertical" size={2} style={{ width: '100%' }}>
                   <Text>
                     <ClockCircleOutlined style={{ marginRight: 4, color: token.colorWarning }} />
-                    <Text strong>Captured: </Text>{preview.meta?.timestamp}
+                    <Text strong>Captured: </Text>
+                    {preview.meta?.timestamp}
                   </Text>
-                  <Text><UserOutlined style={{ marginRight: 4 }} />{preview.meta?.userName} (ID: {preview.meta?.userId})</Text>
+                  <Text>
+                    <UserOutlined style={{ marginRight: 4 }} />
+                    {preview.meta?.userName} (ID: {preview.meta?.userId})
+                  </Text>
                   {preview.meta?.latitude != null && (
-                    <Text><EnvironmentOutlined style={{ marginRight: 4 }} />{preview.meta.latitude.toFixed(5)}, {preview.meta.longitude?.toFixed(5)}</Text>
+                    <Text>
+                      <EnvironmentOutlined style={{ marginRight: 4 }} />
+                      {preview.meta.latitude.toFixed(5)}, {preview.meta.longitude?.toFixed(5)}
+                    </Text>
                   )}
                   {preview.meta?.durationMs != null && (
                     <Text>Duration: {(preview.meta.durationMs / 1000).toFixed(1)}s</Text>
                   )}
                   {preview.meta?.imageHash && (
-                    <Text copyable={{ text: preview.meta.imageHash }}>SHA-256: {preview.meta.imageHash.substring(0, 20)}\u2026</Text>
+                    <Text copyable={{ text: preview.meta.imageHash }}>
+                      SHA-256: {preview.meta.imageHash.substring(0, 20)}…
+                    </Text>
                   )}
                 </Space>
               </div>
 
               <Space style={{ marginTop: 12 }}>
-                <Button icon={<ReloadOutlined />} onClick={handleRetake}>Retake</Button>
-                <Button type="primary" icon={<CheckCircleOutlined />} onClick={handleAccept} loading={loading}>
+                <Button icon={<ReloadOutlined />} onClick={handleRetake}>
+                  Retake
+                </Button>
+                <Button
+                  type="primary"
+                  icon={<CheckCircleOutlined />}
+                  onClick={handleAccept}
+                  loading={loading}
+                >
                   Save {modeLabel}
                 </Button>
               </Space>
@@ -686,8 +909,10 @@ const Inner: React.FC<Props> = (props) => {
 
       {captures.length >= maxCaptures && !disabled && (
         <Alert
-          message={'Maximum ' + maxCaptures + ' ' + modeLabel.toLowerCase() + ' capture' + (maxCaptures !== 1 ? 's' : '') + ' reached'}
-          type="success" showIcon style={{ marginTop: 8 }}
+          message={`Maximum ${maxCaptures} ${modeLabel.toLowerCase()} capture${maxCaptures !== 1 ? 's' : ''} reached`}
+          type="success"
+          showIcon
+          style={{ marginTop: 8 }}
         />
       )}
 
@@ -695,7 +920,7 @@ const Inner: React.FC<Props> = (props) => {
         <Paragraph type="secondary" style={{ textAlign: 'center', marginTop: 16 }}>
           {isVideo
             ? <VideoCameraOutlined style={{ fontSize: 28, display: 'block', marginBottom: 4 }} />
-            : <CameraOutlined style={{ fontSize: 28, display: 'block', marginBottom: 4 }} />}
+            : <CameraOutlined     style={{ fontSize: 28, display: 'block', marginBottom: 4 }} />}
           No {modeLabel.toLowerCase()} captures yet
         </Paragraph>
       )}
@@ -706,4 +931,5 @@ const Inner: React.FC<Props> = (props) => {
 };
 
 export const ImageCaptureField = connect(Inner, mapReadPretty(ImageCaptureReadPretty));
+// Static property so x-component: 'ImageCaptureField.ReadPretty' resolves in table/kanban views
 (ImageCaptureField as any).ReadPretty = ImageCaptureReadPretty;
