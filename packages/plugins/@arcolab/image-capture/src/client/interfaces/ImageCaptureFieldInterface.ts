@@ -1,6 +1,6 @@
 import { ISchema } from '@formily/react';
 import { uid } from '@formily/shared';
-import { CollectionFieldInterface, interfacesProperties } from '@nocobase/client';
+import { CollectionFieldInterface } from '@nocobase/client';
 import { tval } from '../locale';
 
 interface FieldShape {
@@ -59,7 +59,26 @@ export class ImageCaptureFieldInterface extends CollectionFieldInterface {
   }
 
   properties = {
-    ...interfacesProperties.defaultProps,
+    // Standard field display name and field name — inlined from NocoBase's internal defaultProps
+    // (defaultProps is NOT exported from @nocobase/client; this is the correct approach for plugins)
+    'uiSchema.title': {
+      type: 'string',
+      title: '{{t("Field display name")}}',
+      required: true,
+      'x-decorator': 'FormItem',
+      'x-component': 'Input',
+    },
+    name: {
+      type: 'string',
+      title: '{{t("Field name")}}',
+      required: true,
+      'x-disabled': '{{ !createOnly }}',
+      'x-decorator': 'FormItem',
+      'x-component': 'Input',
+      'x-validator': 'uid',
+      description:
+        "{{t('Randomly generated and can be modified. Support letters, numbers and underscores, must start with an letter.')}}",
+    },
     'uiSchema.x-component-props.mode': {
       type: 'string',
       title: tval('Capture Mode'),
