@@ -6,13 +6,16 @@ import { useImageCaptureFieldProps } from './hooks/useImageCaptureFieldProps';
 
 export class ImageCapturePlugin extends Plugin {
   async load() {
+    // @ts-ignore -- Plugin.app type may not resolve during declaration build (peer dep)
     this.app.dataSourceManager.addFieldInterfaces([ImageCaptureFieldInterface]);
 
+    // @ts-ignore
     this.app.addComponents({
       ImageCaptureField,
       ImageCaptureReadPretty,
     });
 
+    // @ts-ignore
     this.app.addScopes({
       useImageCaptureFieldProps,
     });

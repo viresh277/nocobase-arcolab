@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons';
 
 const { Text } = Typography;
+const EM_DASH = '\u2014';
 
 interface CaptureRecord {
   url?: string;
@@ -31,12 +32,6 @@ function getRawUrl(rec: CaptureRecord): string {
   return rec.url ?? rec.preview ?? rec.previewUrl ?? '';
 }
 
-/**
- * Detect MIME type from the record. Checks direct mimetype fields first,
- * then falls back to extension-based detection from extname / filename / url.
- * This handles the case where NocoBase's attachments table may not populate
- * mimetype for certain video formats.
- */
 function mimeOf(rec: CaptureRecord | null | undefined): string {
   const direct = rec?.mimeType ?? rec?.mimetype ?? '';
   if (direct) return direct;
@@ -63,7 +58,8 @@ function resolveUrl(raw: string, client: APIClient): string {
   return base + (raw.startsWith('/') ? raw : `/${raw}`);
 }
 
-interface Props {
+// Exported so ImageCaptureField's declaration build can name this type (TS4023)
+export interface Props {
   value?: CaptureRecord[];
   size?: 'small' | 'default';
 }
@@ -81,7 +77,7 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
 
   if (captures.length === 0) {
     return size === 'small'
-      ? <Text type="secondary">{String.fromCharCode(8212)}</Text>
+      ? <Text type="secondary">{EM_DASH}</Text>
       : <Empty description="No captures" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
   }
 
@@ -109,19 +105,8 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
     >
       {modal && (
         <>
-          <video
-            src={modalUrl}
-            controls
-            autoPlay
-            playsInline
-            style={{
-              width: '100%',
-              maxHeight: 500,
-              display: 'block',
-              borderRadius: token.borderRadius,
-              background: '#000',
-            }}
-          />
+          <video src={modalUrl} controls autoPlay playsInline
+            style={{ width: '100%', maxHeight: 500, display: 'block', borderRadius: token.borderRadius, background: '#000' }} />
           <div style={{ marginTop: 10, fontSize: 12, color: token.colorTextSecondary }}>
             {modal.meta?.userName && <div><UserOutlined style={{ marginRight: 4 }} />{modal.meta.userName}</div>}
             {modal.meta?.latitude != null && (
@@ -133,7 +118,6 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
     </Modal>
   );
 
-  // Small view (table / kanban)
   if (size === 'small') {
     return (
       <>
@@ -161,7 +145,6 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
     );
   }
 
-  // Full view (detail / read-only form)
   return (
     <>
       <div style={{
@@ -202,9 +185,9 @@ export const ImageCaptureReadPretty: React.FC<Props> = ({ value, size }) => {
                       <ClockCircleOutlined style={{ marginRight: 4, color: token.colorWarning }} />
                       {c.meta?.timestamp ?? (c.createdAt
                         ? new Date(c.createdAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
-                        : String.fromCharCode(8212))}
+                        : EM_DASH)}
                     </div>
-                    <div><UserOutlined style={{ marginRight: 4 }} />{c.meta?.userName ?? c.title ?? c.filename ?? String.fromCharCode(8212)}</div>
+                    <div><UserOutlined style={{ marginRight: 4 }} />{c.meta?.userName ?? c.title ?? c.filename ?? EM_DASH}</div>
                     {c.meta?.latitude != null && (
                       <div><EnvironmentOutlined style={{ marginRight: 4 }} />{c.meta.latitude.toFixed(4)}, {c.meta.longitude?.toFixed(4)}</div>
                     )}
